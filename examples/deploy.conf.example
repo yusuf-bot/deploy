@@ -1,0 +1,22 @@
+# deploy configuration
+# Copy to ~/.deploy/deploy.conf and customize
+
+# Domain suffix for subdomains (appname.yourdomain.com)
+BASE_DOMAIN=yourdomain.com
+
+# SSL certificate paths (optional — only set if using HTTPS)
+# SSL_CERT=/etc/ssl/certs/yourdomain.crt
+# SSL_KEY=/etc/ssl/private/yourdomain.key
+
+# Nginx config output path
+# NGINX_CONF=/etc/nginx/sites-available/deploy
+
+# Port range for auto-assignment
+# MIN_PORT=8000
+# MAX_PORT=9000
+
+# App registry file
+# REGISTRY=~/.deploy/registry
+
+# Log directory
+# LOG_DIR=~/.deploy/logs

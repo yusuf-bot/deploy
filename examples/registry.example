@@ -1,0 +1,10 @@
+# App registry for deploy
+# Format: name<tab>port<tab>type<tab>role<tab>path
+#
+# role "app" = web application (gets nginx proxy)
+# role "db"  = database (no proxy, for reference)
+
+myblog	8000	flask	app	/home/user/myblog
+myapp	8001	node	app	/home/user/myapp
+landing	8002	static	app	/home/user/landing-page
+api	8003	docker	app	/home/user/api

@@ -1,0 +1,16 @@
+# Registry and logs (auto-generated)
+registry
+logs/
+
+# Custom nginx configs
+nginx-custom/
+
+# Config file
+deploy.conf
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
