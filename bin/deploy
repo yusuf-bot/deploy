@@ -1,0 +1,129 @@
+#!/bin/bash
+set -e
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  deploy — single-server personal PaaS
+#  A minimal deployment tool: register apps, auto-assign ports, generate nginx
+#  reverse proxy config with SSL, manage processes, env vars, health checks.
+#
+#  Usage:  deploy <command> [options]
+#  See:    deploy help
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Determine script directory ───────────────────────────────────────────────-
+DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LIB_DIR="${DEPLOY_DIR}/lib"
+
+# ── Source libraries ─────────────────────────────────────────────────────────
+source "${LIB_DIR}/core.sh"
+source "${LIB_DIR}/env.sh"
+source "${LIB_DIR}/apps.sh"
+source "${LIB_DIR}/infra.sh"
+
+# ── Command dispatch ─────────────────────────────────────────────────────────-
+
+case "${1:-help}" in
+  init)
+    cmd_init
+    ;;
+
+  list)
+    cmd_list
+    ;;
+
+  add)
+    cmd_add "$2" "$3" "$4"
+    ;;
+
+  remove)
+    cmd_remove "$2"
+    ;;
+
+  start)
+    cmd_start "$2" "$3"
+    ;;
+
+  stop)
+    cmd_stop "$2"
+    ;;
+
+  restart)
+    cmd_restart "$2"
+    ;;
+
+  logs)
+    cmd_logs "$2"
+    ;;
+
+  info)
+    cmd_info "$2"
+    ;;
+
+  config:set)
+    cmd_config_set "$2" "$3"
+    ;;
+
+  config:get)
+    cmd_config_get "$2" "$3"
+    ;;
+
+  config:unset)
+    cmd_config_unset "$2" "$3"
+    ;;
+
+  config:encrypt)
+    cmd_config_encrypt "$2"
+    ;;
+
+  config:decrypt)
+    cmd_config_decrypt "$2"
+    ;;
+
+  prod)
+    cmd_prod "$2"
+    ;;
+
+  rollback)
+    cmd_rollback "$2"
+    ;;
+
+  ssl)
+    cmd_ssl "$2"
+    ;;
+
+  ssl:renew)
+    cmd_ssl_renew
+    ;;
+
+  uninstall)
+    cmd_uninstall
+    ;;
+
+  nginx)
+    regen_nginx "$2"
+    ;;
+
+  custom)
+    name=$2
+    [ -z "$name" ] && { err "Usage: deploy custom <appname>"; exit 1; }
+    mkdir -p "$CUSTOM_DIR"
+    custom_file="${CUSTOM_DIR}/${name}.conf"
+    port=$(get_app_port "$name")
+    if [ ! -f "$custom_file" ]; then
+      info "creating custom snippet for $name..."
+      default_server_block "$name" "$port" > "$custom_file"
+    fi
+    echo "  Edit with: nano $custom_file"
+    echo "  Then: deploy nginx"
+    ;;
+
+  help|--help|-h)
+    print_usage
+    ;;
+
+  *)
+    err "unknown command: $1"
+    echo "Run 'deploy help' for usage."
+    exit 1
+    ;;
+esac
