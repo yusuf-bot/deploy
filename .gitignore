@@ -1,6 +1,8 @@
 # Registry and logs (auto-generated)
 registry
 logs/
+pids/
+apps/
 
 # Custom nginx configs
 nginx-custom/

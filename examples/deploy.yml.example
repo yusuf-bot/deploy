@@ -1,0 +1,30 @@
+# deploy.yml — per-app configuration
+# Place this in your app's root directory.
+# Run `deploy up` from that directory to deploy.
+
+# Required
+name: myapp              # App name (used for subdomain, container name, etc.)
+type: flask              # App type: flask, node, laravel, static, docker, custom
+
+# Optional: override the start command
+start: flask run --host=0.0.0.0 --port=$PORT
+
+# Optional: dev-mode command
+dev: flask run --debug --host=0.0.0.0 --port=$PORT
+
+# Optional: enable WebSocket support in nginx
+websocket: false
+
+# Optional: additional domains (comma-separated)
+domains: api.myapp.com, admin.myapp.com
+
+# Health check settings
+health:
+  path: /health
+  timeout: 30
+
+# Environment variables (loaded via `deploy config:set`)
+env:
+  DATABASE_URL: postgres://user:pass@localhost/db
+  SECRET_KEY: change-me
+  FLASK_ENV: production

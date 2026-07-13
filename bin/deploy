@@ -19,6 +19,8 @@ source "${LIB_DIR}/core.sh"
 source "${LIB_DIR}/env.sh"
 source "${LIB_DIR}/apps.sh"
 source "${LIB_DIR}/infra.sh"
+source "${LIB_DIR}/dns.sh"
+source "${LIB_DIR}/yml.sh"
 
 # ── Command dispatch ─────────────────────────────────────────────────────────-
 
@@ -27,15 +29,19 @@ case "${1:-help}" in
     cmd_init
     ;;
 
-  list)
+  list|ls)
     cmd_list
+    ;;
+
+  up)
+    cmd_up "$2"
     ;;
 
   add)
     cmd_add "$2" "$3" "$4"
     ;;
 
-  remove)
+  remove|rm)
     cmd_remove "$2"
     ;;
 
@@ -49,6 +55,35 @@ case "${1:-help}" in
 
   restart)
     cmd_restart "$2"
+    ;;
+
+  dev)
+    cmd_dev "$2"
+    ;;
+
+  dev:init)
+    cmd_dev_init "$2" "$3"
+    ;;
+
+  dev:logs)
+    cmd_dev_logs "$2"
+    ;;
+
+  dev:url)
+    cmd_dev_url "$2" "$3"
+    ;;
+
+  env:setup)
+    cmd_env_setup "$2"
+    ;;
+
+  status)
+    name=$2
+    if [ -z "$name" ]; then
+      cmd_list
+    else
+      cmd_info "$name"
+    fi
     ;;
 
   logs)
