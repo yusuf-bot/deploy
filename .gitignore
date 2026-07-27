@@ -1,18 +1,39 @@
-# Registry and logs (auto-generated)
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+*.cov
+
+# Go workspace
+go.work
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deploy runtime
 registry
 logs/
 pids/
 apps/
-
-# Custom nginx configs
 nginx-custom/
-
-# Config file
 deploy.conf
-
-# macOS
-.DS_Store
 
 # Editor
 *.swp
 *.swo
+
+# Specific tracked binaries
+bin/deploy
+
+# Backup files
+*.bak
