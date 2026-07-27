@@ -229,7 +229,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		svcPort = cfg.Ports[0].Container
 	}
 
-	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort)
+	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))
@@ -302,7 +302,14 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		return nil, fmt.Errorf("health check: %w", err)
 	}
 
-	// 9. Stop old container and remove it (zero-downtime swap)
+	// 9. Update Caddy manager FIRST (new port before old container stops)
+	if d.caddyManager != nil && d.caddyManager.IsRunning() {
+		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
+			return nil, fmt.Errorf("caddy port update: %w", err)
+		}
+	}
+
+	// 10. Stop old container and remove it (zero-downtime swap)
 	if oldContainerID != "" {
 		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
 			log.Printf("warning: stop old container %s: %v", oldContainerID[:12], err)
@@ -312,30 +319,31 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		}
 	}
 
-	// 10. Update app record with new container ID
-	if err := state.UpdateAppContainer(d.db, appName, containerID); err != nil {
+	// 11. Update app record with new container ID (atomic transaction)
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := state.UpdateAppContainer(tx, appName, containerID); err != nil {
 		return nil, fmt.Errorf("update app container: %w", err)
 	}
-	if err := state.UpdateAppPort(d.db, appName, hostPort); err != nil {
+	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
 	}
-
-	// 11. Mark deployment as active
-	if err := state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusActive, ""); err != nil {
+	if err := state.UpdateDeploymentStatus(tx, depID, types.DeployStatusActive, ""); err != nil {
 		return nil, fmt.Errorf("update deployment status: %w", err)
 	}
-	if err := state.SetActiveDeployment(d.db, dep); err != nil {
+	if err := state.SetActiveDeployment(tx, dep); err != nil {
 		log.Printf("warning: set active deployment: %v", err)
 	}
-	if err := state.DeactivateOtherDeployments(d.db, app.ID, depID); err != nil {
+	if err := state.DeactivateOtherDeployments(tx, app.ID, depID); err != nil {
 		log.Printf("warning: deactivate other deployments: %v", err)
 	}
 
-	// 12. Notify Caddy manager about the new port
-	if d.caddyManager != nil && d.caddyManager.IsRunning() {
-		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
-			log.Printf("warning: caddy port update: %v", err)
-		}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	log.Printf("promoted %s -> %s (container=%s, port=%d)", appName, version, containerID[:12], hostPort)
@@ -399,7 +407,7 @@ type buildResult struct {
 }
 
 // createPromoteContainer sets up the container config for a new deployment.
-func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int) (string, error) {
+func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int, version string) (string, error) {
 	// Convert []string env (KEY=VALUE) to map[string]string for the app object
 	envMap := make(map[string]string, len(env))
 	for _, e := range env {
@@ -415,7 +423,7 @@ func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, i
 		Image: imageRef,
 		Env:   envMap,
 	}
-	return d.runner.CreateContainer(ctx, promoteApp)
+	return d.runner.CreateContainer(ctx, promoteApp, version)
 }
 // mergeEnv combines app env vars with decrypted secrets. Secrets override app env on conflict.
 func mergeEnv(appEnv map[string]string, secrets map[string]string) []string {

@@ -218,7 +218,7 @@ func TestPromoteSuccess(t *testing.T) {
 		Port:  app.Port,
 		Image: "nginx:latest",
 	}
-	oldCID, err := mocks.runner.CreateContainer(context.Background(), oldApp)
+	oldCID, err := mocks.runner.CreateContainer(context.Background(), oldApp, "v0.0.0")
 	if err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}

@@ -33,6 +33,8 @@ type mockAppData struct {
 	Image string
 	Port  int
 	Env   map[string]string
+	Dev   bool
+	Version string
 }
 
 // NewMockDocker creates a new MockDocker.
@@ -67,7 +69,7 @@ func (m *MockDocker) PullImage(ctx context.Context, image string) error {
 }
 
 // CreateContainer implements Interface.
-func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App) (string, error) {
+func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App, version string) (string, error) {
 	if err := m.shouldFail("CreateContainer"); err != nil {
 		return "", err
 	}
@@ -85,6 +87,8 @@ func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App) (strin
 			Image: app.Image,
 			Port:  app.Port,
 			Env:   app.Env,
+			Dev:   app.Dev,
+			Version: version,
 		},
 		Running: false,
 		Logs:    "",
@@ -218,11 +222,12 @@ func (m *MockDocker) ListContainers(ctx context.Context) ([]ContainerInfo, error
 		}
 		result = append(result, ContainerInfo{
 			ID:     id,
-			Name:   fmt.Sprintf("deploy-%s", c.App.Name),
+			Name:   fmt.Sprintf("deploy-%s-%s", c.App.Name, c.App.Version),
 			Image:  c.App.Image,
 			Status: status,
 			AppID:  c.App.Name,
 			Port:   c.App.Port,
+			IsDev:  c.App.Dev,
 		})
 	}
 	return result, nil
@@ -254,6 +259,20 @@ func (m *MockDocker) HealthCheck(ctx context.Context, containerID string, port i
 }
 
 // FindContainerByLabel implements Interface. Returns empty string if not found.
+func (m *MockDocker) FindDevContainer(ctx context.Context, appName string) (string, error) {
+	if err := m.shouldFail("FindDevContainer"); err != nil {
+		return "", err
+	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	for _, c := range m.Containers {
+		if c.App != nil && c.App.Name == appName && c.App.Dev {
+			return c.ID, nil
+		}
+	}
+	return "", nil
+}
+
 func (m *MockDocker) FindContainerByLabel(ctx context.Context, key, value string) (string, error) {
 	if err := m.shouldFail("FindContainerByLabel"); err != nil {
 		return "", err

@@ -124,9 +124,94 @@ var domainLsCmd = &cobra.Command{
 	},
 }
 
+// --- DNS subcommands (Phase 8) ---
+
+var domainDNSCmd = &cobra.Command{
+	Use:   "dns",
+	Short: "Manage DNS records for app domains",
+}
+
+var domainDNSSyncCmd = &cobra.Command{
+	Use:   "sync <app>",
+	Short: "Ensure A/AAAA records exist for app's domains",
+	Long: `Sync DNS records for all domains attached to an app.
+Creates A records (--ipv4) and AAAA records (--ipv6) pointing to your server.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := newClient()
+		ipv4, _ := cmd.Flags().GetString("ipv4")
+		ipv6, _ := cmd.Flags().GetString("ipv6")
+		if ipv4 == "" && ipv6 == "" {
+			return fmt.Errorf("at least one of --ipv4 or --ipv6 required")
+		}
+		resp, err := c.DNSSync(args[0], ipv4, ipv6)
+		if err != nil {
+			return err
+		}
+
+		if jsonFlag {
+			data, _ := json.MarshalIndent(resp, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+
+		for _, r := range resp.Results {
+			status := "created"
+			if r.Existed {
+				status = "exists"
+			}
+			fmt.Printf("  %s %s -> %s (%s)\n", r.Domain, r.Type, r.Value, status)
+		}
+		for _, e := range resp.Errors {
+			fmt.Fprintf(os.Stderr, "  error: %s\n", e)
+		}
+		return nil
+	},
+}
+
+var domainDNSListCmd = &cobra.Command{
+	Use:   "list <app>",
+	Short: "List DNS records for app's domains",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := newClient()
+		records, err := c.DNSList(args[0])
+		if err != nil {
+			return err
+		}
+
+		if jsonFlag {
+			data, _ := json.MarshalIndent(records, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+
+		if len(records) == 0 {
+			fmt.Printf("No DNS records for app %q\n", args[0])
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "ID\tNAME\tTYPE\tVALUE\tTTL")
+		fmt.Fprintln(w, "--\t----\t----\t-----\t---")
+		for _, r := range records {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", r.ID, r.Name, r.Type, r.Value, r.TTL)
+		}
+		w.Flush()
+		return nil
+	},
+}
+
 func init() {
 	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainRmCmd)
 	domainCmd.AddCommand(domainLsCmd)
+	domainCmd.AddCommand(domainDNSCmd)
 	rootCmd.AddCommand(domainCmd)
+
+	domainDNSCmd.AddCommand(domainDNSSyncCmd)
+	domainDNSCmd.AddCommand(domainDNSListCmd)
+
+	domainDNSSyncCmd.Flags().String("ipv4", "", "Server IPv4 address for A records")
+	domainDNSSyncCmd.Flags().String("ipv6", "", "Server IPv6 address for AAAA records")
 }

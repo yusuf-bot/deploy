@@ -119,7 +119,7 @@ func ListDeploymentsByApp(db *sql.DB, appID string) ([]types.Deployment, error) 
 }
 
 // UpdateDeploymentStatus updates the status and deploy_log of a deployment.
-func UpdateDeploymentStatus(db *sql.DB, id string, status string, deployLog string) error {
+func UpdateDeploymentStatus(db Execer, id string, status string, deployLog string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	var logArg *string
@@ -174,7 +174,7 @@ func SetAllDeployingToFailed(db *sql.DB) error {
 }
 
 // SetActiveDeployment marks a deployment as the active one for its app.
-func SetActiveDeployment(db *sql.DB, d *types.Deployment) error {
+func SetActiveDeployment(db Execer, d *types.Deployment) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
 		`UPDATE deployments SET status = ?, updated_at = ? WHERE id = ? AND app_id = ?`,
@@ -187,7 +187,7 @@ func SetActiveDeployment(db *sql.DB, d *types.Deployment) error {
 }
 
 // DeactivateOtherDeployments sets all deployments for an app (except the given ID) to 'inactive'.
-func DeactivateOtherDeployments(db *sql.DB, appID string, excludeID string) error {
+func DeactivateOtherDeployments(db Execer, appID string, excludeID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
 		`UPDATE deployments SET status = ?, updated_at = ? WHERE app_id = ? AND id != ? AND status = ?`,

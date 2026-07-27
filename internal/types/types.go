@@ -43,6 +43,9 @@ type App struct {
 	Port        int               `json:"port"`
 	Image       string            `json:"image"`
 	Env         map[string]string `json:"env"`
+	Volumes []VolumeMapping `json:"volumes,omitempty"`
+	Dev     bool            `json:"dev,omitempty"`
+	Command string          `json:"command,omitempty"`
 	ContainerID string            `json:"container_id,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
@@ -101,6 +104,7 @@ type DeployConfig struct {
 	Env       map[string]string `yaml:"env,omitempty"`
 	Health    HealthConfig      `yaml:"health,omitempty"`
 	Resources ResourceConfig    `yaml:"resources,omitempty"`
+	Dev       *DevConfig        `yaml:"dev,omitempty"`
 	Volumes   []VolumeMapping   `yaml:"volumes,omitempty"`
 }
 
@@ -138,6 +142,13 @@ type ResourceConfig struct {
 type VolumeMapping struct {
 	Source string `yaml:"source"`
 	Target string `yaml:"target"`
+}
+
+// DevConfig holds development container settings.
+type DevConfig struct {
+	Command string          `yaml:"command,omitempty"`
+	Port    int             `yaml:"port,omitempty"`
+	Volumes []VolumeMapping `yaml:"volumes,omitempty"`
 }
 
 // --- API Request/Response types ---

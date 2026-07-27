@@ -37,3 +37,9 @@ func OpenDB(path string) (*sql.DB, error) {
 func Migrate(db *sql.DB) error {
 	return RunMigrations(db)
 }
+
+// Execer is satisfied by both *sql.DB and *sql.Tx,
+// enabling state functions to run within transactions.
+type Execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}

@@ -17,7 +17,7 @@ type Interface interface {
 
 	// CreateContainer creates a container but does not start it.
 	// Returns the container ID.
-	CreateContainer(ctx context.Context, app *types.App) (string, error)
+	CreateContainer(ctx context.Context, app *types.App, version string) (string, error)
 
 	// StartContainer starts an existing container by ID.
 	StartContainer(ctx context.Context, containerID string) error
@@ -46,6 +46,9 @@ type Interface interface {
 	// FindContainerByLabel finds a container by label key=value pair.
 	// Returns the container ID or empty string if not found.
 	FindContainerByLabel(ctx context.Context, key, value string) (string, error)
+
+	// FindDevContainer finds a dev container by app name (checks deploy.dev=true label).
+	FindDevContainer(ctx context.Context, appName string) (string, error)
 }
 
 // ContainerState holds key container runtime state.
@@ -64,4 +67,5 @@ type ContainerInfo struct {
 	Status string
 	AppID  string
 	Port   int
+	IsDev  bool   `json:"is_dev,omitempty"`
 }

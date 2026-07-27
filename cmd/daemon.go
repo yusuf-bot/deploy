@@ -126,7 +126,8 @@ func runDaemon() error {
 					continue
 				}
 
-				containerID, err := dockerRunner.CreateContainer(ctx, &app)
+				ver := fmt.Sprintf("auto-%d", time.Now().Unix())
+				containerID, err := dockerRunner.CreateContainer(ctx, &app, ver)
 				if err != nil {
 					log.Printf("auto-start %q: create container: %v", app.Name, err)
 					continue

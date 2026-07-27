@@ -1,257 +1,284 @@
-# deploy — single-server personal PaaS
+# deploy — single-binary personal PaaS
 
-So I tried Coolify, Dokploy but it felt like unnecessary overhead and could never figure it out. This is my solution: lightweight, entirely in the CLI, not too hard to setup and work with. I assume it won't fit everyone's needs but I have found it to work well for what I need.
+Deploy is a single-binary, agent-first personal PaaS for managing Docker containers on a single server. It provides a persistent daemon with a Unix socket API, Docker-based deployment pipeline, Caddy reverse proxy with automatic SSL, and SQLite-backed state management.
 
-Contributions are accepted and welcomed.
+Key features:
+- Single 21MB Go binary, no CGO, no PostgreSQL, no Redis
+- Docker build + deploy pipeline with health checks and rollbacks
+- Caddy reverse proxy with automatic Let's Encrypt SSL
+- Git push deploy workflow
+- Development containers with volume mounts
+- Encrypted secrets (AES-256-GCM)
+- DNS record management (6 providers)
+- Audit logging and backup/restore
 
-Register apps, auto-assign ports, generate nginx reverse proxy config, manage processes, environment variables, automatic SSL, health checks, and rollbacks.
+## Quick Start
 
 ```bash
-deploy add myapp flask /home/user/myapp
-deploy config:set myapp DATABASE_URL=postgres://...
-deploy start myapp -d
-# -> https://myapp.yourdomain.com
-```
+# Install (one of these):
+curl -fsSL https://deploy.sh | sh
 
-## Quickstart
-
-```bash
-# Clone or download the repo
-git clone https://github.com/yusuf-bot/deploy.git
-cd deploy
-
-# Symlink the binary
-sudo ln -sf "$(pwd)/bin/deploy" /usr/local/bin/deploy
-
-# Initialize
+# Initialize the environment
 deploy init
 
-# Edit config
-nano ~/.deploy/deploy.conf
-
-# Register and start an app
-deploy add myapp node /home/user/my-node-app
-deploy start myapp -d
-
-# See everything running
-deploy ls
+# Deploy your first app
+cd my-project
+deploy promote myapp
 ```
 
-## Commands
+## Install
 
-| Command | Description |
-|---|---|
-| `deploy init` | Create config directory and default files |
-| `deploy add <name> <type> <path>` | Register a new app (auto-assigns port) |
-| `deploy remove\|rm <name>` | Unregister an app |
-| `deploy ls` | Show all apps and their status |
-| `deploy start <name> [-d]` | Start an app with health check |
-| `deploy stop <name>` | Stop an app (SIGTERM → wait → SIGKILL) |
-| `deploy restart <name>` | Stop then start |
-| `deploy dev <name>` | Start in dev mode (hot reload, dev subdomain) |
-| `deploy dev:init <name> <template>` | Scaffold a new project (flask, express, node, static) |
-| `deploy dev:logs <name>` | Tail dev mode logs with file watching |
-| `deploy dev:url <name> [--open]` | Show dev URL, optionally open in browser |
-| `deploy status [name]` | Show status for all or one app |
-| `deploy logs <name>` | Tail app stdout/stderr |
-| `deploy info <name>` | Show app details (port, type, status, env, logs) |
-| `deploy prod <name>` | Build and deploy via Docker (with rollback snapshot) |
-| `deploy up [path]` | Deploy from deploy.yml in current directory |
-| `deploy config:set <name> KEY=VAL` | Set an environment variable for an app |
-| `deploy config:get <name> [KEY]` | List all or one env var |
-| `deploy config:unset <name> KEY` | Remove an environment variable |
-| `deploy config:encrypt <name>` | Encrypt env file with GPG (AES256) |
-| `deploy config:decrypt <name>` | Decrypt env file with GPG |
-| `deploy env:setup [name]` | Generate .env.example from app config |
-| `deploy rollback <name>` | Rollback to previous deployment |
-| `deploy ssl <name>` | Provision Let's Encrypt SSL (requires certbot) |
-| `deploy ssl:renew` | Renew all Let's Encrypt certificates |
-| `deploy nginx` | Generate nginx config and reload |
-| `deploy nginx --reset` | Regenerate ignoring custom snippets |
-| `deploy custom <name>` | Create/edit custom nginx snippet |
-| `deploy help` | Show full usage |
-
-## App Types
-
-| Type | Start Command | Dev Command |
-|---|---|---|
-| `flask` | `flask run --host=0.0.0.0 --port=$PORT` | `flask run --debug --host=0.0.0.0 --port=$PORT` |
-| `laravel` | `php artisan serve --host=0.0.0.0 --port=$PORT` | `php artisan serve --host=0.0.0.0 --port=$PORT` |
-| `node` | `PORT=$PORT npm start` | `PORT=$PORT npm run dev` |
-| `static` | `npx serve -s . -l $PORT` | `npx serve -s . -l $PORT --no-clipboard` |
-| `docker` | `docker compose up --build -d` | `docker compose up --build -d` |
-| `custom` | From deploy.yml `start` field | From deploy.yml `dev` field |
-
-## Dev Mode
+### Option 1: Install script
 
 ```bash
-deploy dev myapp
-# Starts the app with dev flags on a separate port
-# Available at: https://myapp.dev.yourdomain.com
-# Hot reload enabled for supported types
+curl -fsSL https://deploy.sh | sh
 ```
 
-`deploy dev` uses a separate nginx config (`/etc/nginx/sites-available/deploy-dev`) so dev and prod run side by side. Regenerate it with `deploy nginx`.
+Downloads the latest release binary to `/usr/local/bin/deploy`.
 
-## deploy.yml — In-App Config
+### Option 2: Pre-built binary
 
-Instead of passing flags every time, put a `deploy.yml` in your project root:
-
-```yaml
-# deploy.yml
-name: myapp
-type: flask
-start: flask run --host=0.0.0.0 --port=$PORT
-dev: flask run --debug --host=0.0.0.0 --port=$PORT
-websocket: false
-health:
-  path: /health
-env:
-  DATABASE_URL: postgres://user:pass@localhost/db
-```
-
-Then deploy with one command:
+Download from [GitHub Releases](https://github.com/yusuf-bot/deploy/releases):
 
 ```bash
-cd ~/myapp
-deploy up
+curl -fsSL https://github.com/yusuf-bot/deploy/releases/download/v0.2.0/deploy_v0.2.0_linux_amd64.tar.gz
+tar -xzf deploy_v0.2.0_linux_amd64.tar.gz
+sudo cp deploy /usr/local/bin/deploy
 ```
 
-Auto-registers, starts, creates DNS, generates nginx, provisions SSL. See `examples/deploy.yml.example`.
-
-## DNS Automation
-
-To auto-create DNS records (no more Cloudflare dashboard trips):
+### Option 3: Build from source
 
 ```bash
-# ~/.deploy/deploy.conf
-DNS_PROVIDER=cloudflare
-CLOUDFLARE_TOKEN=your_api_token
-CLOUDFLARE_ZONE=yourdomain.com
+git clone https://github.com/yusuf-bot/deploy.git
+cd deploy
+go build -o bin/deploy .
+sudo cp bin/deploy /usr/local/bin/deploy
 ```
 
-Then `deploy add` and `deploy dev` automatically create A records. Remove an app and the DNS record is cleaned up. Supports manual mode (prints instructions) when no provider is set.
+Requires Go 1.26+. No CGO required.
 
-### Supported Providers
-
-| Provider | Config | Status |
-|---|---|---|
-| Cloudflare | `CLOUDFLARE_TOKEN` + `CLOUDFLARE_ZONE` | Done |
-| Manual | No config needed | Done (prints instructions) |
-
-## WebSocket Support
-
-Enable WebSocket proxying per app:
+## Initialize
 
 ```bash
-# Via config file
-echo "websocket=true" >> ~/.deploy/apps/myapp/config
-deploy nginx
-
-# Or via deploy.yml
-echo "websocket: true" >> deploy.yml
-deploy up
+deploy init
 ```
 
-## PID Management (No More False "Stopped")
+This creates:
+- `~/.deploy/` data directory with SQLite database and configuration
+- `~/.deploy/master.key` AES-256-GCM master key (0600 permissions)
+- `~/.deploy/caddy/` Caddy working directory
+- Optionally downloads Caddy v2.8+ for reverse proxy and SSL termination
 
-The status detection now uses three methods:
-1. **Stored PID** — checks the saved PID file first
-2. **Port lsof** — fallback using `lsof -ti :port`
-3. **Docker ps** — for docker-type apps
+## Start the daemon
 
-Stop uses a proper flow: `SIGTERM → wait 10s → SIGKILL` if needed.
+```bash
+deploy daemon
+```
+
+The daemon runs as a foreground process. For production, use the provided systemd unit:
+
+```
+[Unit]
+Description=deploy daemon
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/deploy daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ## Configuration
 
-All settings go in `~/.deploy/deploy.conf`:
+### deploy.yml
+
+Place a `deploy.yml` in your project root to define build and runtime configuration:
+
+```yaml
+build:
+  dockerfile: Dockerfile
+  context: .
+  args:
+    NODE_ENV: production
+
+health:
+  path: /health
+  initial_delay: 2s
+  interval: 3s
+  timeout: 5s
+  retries: 10
+
+ports:
+  - container: 8080
+
+domains:
+  - example.com
+
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+
+dev:
+  command: npm run dev
+  port: 3000
+  volumes:
+    - source: ./src
+      target: /app/src
+```
+
+All fields are optional. The daemon validates the YAML strictly (unknown fields produce errors).
+
+### Daemon settings
 
 ```bash
-# Required: your domain
-BASE_DOMAIN=myapp.com
-
-# Dev domain (defaults to dev.$BASE_DOMAIN)
-DEV_DOMAIN=dev.myapp.com
-
-# DNS automation
-DNS_PROVIDER=cloudflare
-CLOUDFLARE_TOKEN=abc123
-CLOUDFLARE_ZONE=myapp.com
-
-# SSL paths
-SSL_CERT=/etc/letsencrypt/live/myapp.com/fullchain.pem
-SSL_KEY=/etc/letsencrypt/live/myapp.com/privkey.pem
-
-# Port range for apps
-MIN_PORT=8000
-MAX_PORT=9000
-
-# Nginx config output
-NGINX_CONF=/etc/nginx/sites-available/deploy
-NGINX_DEV_CONF=/etc/nginx/sites-available/deploy-dev
+deploy config set dns_provider cloudflare
+deploy config set dns_token <api-token>     # stored encrypted
+deploy config get dns_token                 # shows ***
+deploy config get dns_token --reveal        # shows plaintext
+deploy config get                           # list all settings
 ```
 
-## How It Works
+Sensitive settings (`dns_token`, `dns_secret`) are automatically encrypted with the master key before storage.
+
+## Command Reference
+
+### Deployment
+
+| Command | Description |
+|---------|-------------|
+| `deploy promote <app>` | Build Docker image, start new container on port+1, health check, stop old container |
+| `deploy rollback <app> [version]` | Rollback to a previous deployment version |
+| `deploy status [app]` | Show deployment status for all apps or one app |
+| `deploy logs <app>` | Stream container logs |
+| `deploy stop <app>` | Gracefully stop a container (SIGTERM + 30s grace period) |
+| `deploy restart <app>` | Sequential stop then start |
+| `deploy rm <app>` | Remove an app with clean teardown (requires confirmation) |
+
+### Domains and DNS
+
+| Command | Description |
+|---------|-------------|
+| `deploy domain add <app> <domain>` | Attach a domain to an app (updates Caddy config) |
+| `deploy domain rm <app> <domain>` | Remove a domain from an app |
+| `deploy domain ls [app]` | List domains |
+| `deploy domain dns sync <app> --ipv4 <ip> [--ipv6 <ip>]` | Create or update A/AAAA records for all app domains |
+| `deploy domain dns list <app>` | List DNS records for app domains |
+
+### Secrets (encrypted)
+
+| Command | Description |
+|---------|-------------|
+| `deploy secrets set <app> <key>=<value>` | Add or update an encrypted secret |
+| `deploy secrets get <app> <key>` | Retrieve a decrypted secret value |
+| `deploy secrets rm <app> <key>` | Remove a secret |
+| `deploy secrets ls <app>` | List secret keys |
+
+### Development
+
+| Command | Description |
+|---------|-------------|
+| `deploy dev start <app>` | Start a development container with volume mounts (port = app.port + 1000) |
+| `deploy dev stop <app>` | Stop and remove the development container |
+
+### Git push deploy
+
+| Command | Description |
+|---------|-------------|
+| `deploy git setup <app>` | Create a bare git repository with post-receive hook that auto-deploys on push |
+
+### Operations
+
+| Command | Description |
+|---------|-------------|
+| `deploy backup` | Create a full system backup (SQLite VACUUM INTO + tar archive) |
+| `deploy restore <backup-file>` | Restore from a backup (daemon must be stopped) |
+| `deploy audit [app]` | Show deploy audit log entries |
+| `deploy config get [key]` | Get daemon settings (secrets masked by default) |
+| `deploy config set key=val` | Set a daemon setting |
+| `deploy usage <app>` | Show container resource usage (CPU, memory) |
+| `deploy ssh <app>` | Open an interactive shell in the running container |
+
+### System
+
+| Command | Description |
+|---------|-------------|
+| `deploy init` | Initialize the deploy environment |
+| `deploy daemon` | Start the deploy daemon |
+| `deploy uninstall` | Remove deploy, its data, and systemd service |
+| `deploy version` | Print the version |
+
+## DNS Providers
+
+Supported DNS providers for automatic A and AAAA record management:
+
+| Provider | Auth |
+|----------|------|
+| Cloudflare | API Token (Bearer) |
+| DigitalOcean | Personal Access Token |
+| Hetzner | Cloud API Token |
+| Linode | Personal Access Token |
+| Vultr | API Key |
+| Porkbun | API Key + Secret Key |
+
+Route53 support is planned for a future release.
+
+Configure the provider via daemon settings:
+
+```bash
+deploy config set dns_provider cloudflare
+deploy config set dns_token <api-token>
+```
+
+Then sync DNS records for an app:
+
+```bash
+deploy domain dns sync myapp --ipv4 203.0.113.10
+```
+
+## Architecture
 
 ```
-deploy add myapp node ./myapp
-  ├── auto-assigns next available port
-  ├── writes to registry
-  ├── creates DNS record (if configured)
-  └── regenerates nginx config
-
-deploy start myapp -d
-  ├── runs the app's command
-  ├── saves PID for accurate status tracking
-  └── health check waits for app to respond
-
-deploy stop myapp
-  ├── sends SIGTERM
-  ├── waits 10 seconds
-  └── sends SIGKILL if still alive
-
-deploy up
-  ├── reads deploy.yml
-  ├── registers if needed
-  ├── sets env vars
-  ├── creates DNS record
-  ├── starts the app
-  ├── generates nginx config
-  └── provisions SSL
++-------------------+      Unix Socket       +-------------------+
+|  deploy CLI       | <--------------------> |  deploy daemon    |
+|  (cobra commands) |      /var/run/         |  (HTTP API)       |
++-------------------+      deploy.sock       +-------------------+
+                                                    |
+                      +-----------------------------+------------------+
+                      |              |              |                  |
+                 +---------+   +---------+   +-----------+   +--------------+
+                 | SQLite  |   | Docker  |   | Caddy     |   | Tarball      |
+                 | State   |   | Runtime |   | Subprocess|   | Storage      |
+                 +---------+   +---------+   +-----------+   +--------------+
 ```
 
-## Project Structure
+- **CLI** sends commands to the daemon over a Unix socket (0700 permissions)
+- **Daemon** manages state in SQLite (WAL mode, busy_timeout 5s), runs Docker containers, and manages a Caddy subprocess for reverse proxy and SSL
+- **Promote** flow: build image, save tarball for rollback, start new container on port+1, health check, update Caddy config, stop old container
+- **Secrets** are encrypted with AES-256-GCM using a master key stored at `~/.deploy/master.key` (0600)
+- **Images** are stored as tarballs in `~/.deploy/images/` (last 5 kept per app)
 
-```
-deploy/
-├── bin/
-│   └── deploy           # CLI entry point (thin dispatcher)
-├── lib/
-│   ├── core.sh          # Config, colors, helpers, nginx functions
-│   ├── apps.sh          # App lifecycle: add, remove, list, start, stop, etc.
-│   ├── env.sh           # Environment variable management + GPG encrypt
-│   ├── infra.sh         # Infrastructure: init, prod, dev, rollback, ssl
-│   ├── dns.sh           # DNS provider abstraction (Cloudflare, manual)
-│   └── yml.sh           # deploy.yml parser + deploy up command
-├── examples/
-│   ├── deploy.conf.example
-│   ├── deploy.yml.example
-│   └── nginx-custom/
-├── LICENSE
-└── README.md
-```
+## Security
+
+- All sensitive values (`dns_token`, `dns_secret`) are encrypted with AES-256-GCM before storage
+- Master key stored at `~/.deploy/master.key` with 0600 permissions
+- SQLite database at 0600 permissions
+- Unix socket at 0700 permissions (accessible only by owner)
+- Container stop uses SIGTERM with 30-second grace period before SIGKILL
+- Encrypted secrets are decrypted only at runtime when passed as environment variables to containers
 
 ## Requirements
 
-- Linux with bash
-- nginx (for reverse proxy)
-- lsof (for port/PID checking)
-- sudo (for nginx reload)
-- curl (for health checks)
-- Docker + Docker Compose (for docker/prod app types)
-- certbot (optional, for Let's Encrypt SSL)
-- gpg (optional, for env file encryption)
+- Linux (kernel 4.0+)
+- Docker Engine (20.0+)
+- Go 1.26+ (only for building from source)
+
+Optional:
+- Caddy v2.8+ (auto-downloaded by `deploy init`, for reverse proxy and SSL)
 
 ## License
 
-MIT
+MIT License. Copyright (c) 2026 yusuf-bot.

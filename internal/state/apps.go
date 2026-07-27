@@ -177,7 +177,7 @@ func UpdateAppStatus(db *sql.DB, name string, status string) error {
 }
 
 // UpdateAppContainer updates the container_id of an app.
-func UpdateAppContainer(db *sql.DB, name string, containerID string) error {
+func UpdateAppContainer(db Execer, name string, containerID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
 		`UPDATE apps SET container_id = ?, updated_at = ? WHERE name = ?`,
@@ -203,7 +203,7 @@ func SetAllRunningToUnknown(db *sql.DB) error {
 }
 
 // UpdateAppPort updates the port of an app.
-func UpdateAppPort(db *sql.DB, name string, port int) error {
+func UpdateAppPort(db Execer, name string, port int) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
 		`UPDATE apps SET port = ?, updated_at = ? WHERE name = ?`,

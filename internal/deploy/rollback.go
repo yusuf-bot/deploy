@@ -124,7 +124,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		svcPort = cfg.Ports[0].Container
 	}
 
-	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort)
+	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort, targetVersion)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))
@@ -195,6 +195,13 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		return nil, fmt.Errorf("health check: %w", err)
 	}
 
+	// Update Caddy manager FIRST (new port before old container stops)
+	if d.caddyManager != nil && d.caddyManager.IsRunning() {
+		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
+			return nil, fmt.Errorf("caddy port update: %w", err)
+		}
+	}
+
 	// Stop and remove old container
 	if oldContainerID != "" {
 		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
@@ -205,24 +212,32 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		}
 	}
 
-	// Update app record
-	if err := state.UpdateAppContainer(d.db, appName, containerID); err != nil {
+	// Update app record and mark deployment active (atomic transaction)
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := state.UpdateAppContainer(tx, appName, containerID); err != nil {
 		return nil, fmt.Errorf("update app container: %w", err)
 	}
-	if err := state.UpdateAppPort(d.db, appName, hostPort); err != nil {
+	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
 	}
-
-	// Mark deployment active
 	dep.CreatedAt = time.Now().UTC()
-	if err := state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusActive, ""); err != nil {
+	if err := state.UpdateDeploymentStatus(tx, depID, types.DeployStatusActive, ""); err != nil {
 		return nil, fmt.Errorf("update deployment status: %w", err)
 	}
-	if err := state.SetActiveDeployment(d.db, dep); err != nil {
+	if err := state.SetActiveDeployment(tx, dep); err != nil {
 		log.Printf("warning: set active deployment: %v", err)
 	}
-	if err := state.DeactivateOtherDeployments(d.db, app.ID, depID); err != nil {
+	if err := state.DeactivateOtherDeployments(tx, app.ID, depID); err != nil {
 		log.Printf("warning: deactivate other deployments: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	log.Printf("rolled back %s to %s (container=%s, port=%d)", appName, targetVersion, containerID[:12], hostPort)

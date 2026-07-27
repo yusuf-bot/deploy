@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
+	"deploy/internal/dns"
 	"deploy/internal/types"
 )
 
@@ -343,8 +345,95 @@ func (c *Client) GetConfig() (map[string]string, error) {
 	return result, nil
 }
 
+// GetConfigKey returns a single daemon setting by key. When reveal is true,
+// secret setting values are returned decrypted instead of masked.
+func (c *Client) GetConfigKey(key string, reveal bool) (map[string]string, error) {
+	path := "/api/v1/config?key=" + url.QueryEscape(key)
+	if reveal {
+		path += "&reveal=true"
+	}
+	var result map[string]string
+	if err := c.doRequest("GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // SetConfig sets a daemon setting.
 func (c *Client) SetConfig(key, value string) error {
 	body := map[string]string{key: value}
 	return c.doRequest("PUT", "/api/v1/config", body, nil)
+}
+
+// CreateBackup creates a full system backup and returns the path to the archive.
+func (c *Client) CreateBackup() (string, error) {
+	var result struct{ Path string `json:"path"` }
+	if err := c.doRequest("POST", "/api/v1/backup", nil, &result); err != nil {
+		return "", err
+	}
+	return result.Path, nil
+}
+
+// DevStart starts a development container for an app.
+func (c *Client) DevStart(name string) (*types.StartStopResponse, error) {
+	var result types.StartStopResponse
+	if err := c.doRequest("POST", "/api/v1/apps/"+name+"/dev/start", nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DevStop stops and removes a development container for an app.
+func (c *Client) DevStop(name string) (*types.StartStopResponse, error) {
+	var result types.StartStopResponse
+	if err := c.doRequest("POST", "/api/v1/apps/"+name+"/dev/stop", nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// --- DNS ---
+
+// DNSSyncResult records the result of syncing a single DNS record.
+type DNSSyncResult struct {
+	Domain  string `json:"domain"`
+	Type    string `json:"type"`
+	Value   string `json:"value"`
+	Existed bool   `json:"existed"`
+}
+
+// DNSSyncResponse is the response for a DNS sync operation.
+type DNSSyncResponse struct {
+	Results []DNSSyncResult `json:"results"`
+	Errors  []string        `json:"errors,omitempty"`
+}
+
+// DNSSync ensures A/AAAA records exist for all domains of an app.
+func (c *Client) DNSSync(name, ipv4, ipv6 string) (*DNSSyncResponse, error) {
+	body := map[string]string{}
+	if ipv4 != "" {
+		body["ipv4"] = ipv4
+	}
+	if ipv6 != "" {
+		body["ipv6"] = ipv6
+	}
+	var result DNSSyncResponse
+	if err := c.doRequest("POST", "/api/v1/apps/"+name+"/dns/sync", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DNSList returns all DNS records for an app's domains.
+func (c *Client) DNSList(name string) ([]dns.Record, error) {
+	var result []dns.Record
+	if err := c.doRequest("GET", "/api/v1/apps/"+name+"/dns/records", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Shutdown tells the daemon to shut down gracefully.
+func (c *Client) Shutdown() error {
+	return c.doRequest("POST", "/api/v1/shutdown", nil, nil)
 }

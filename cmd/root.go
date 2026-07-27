@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"deploy/internal/client"
+	_ "deploy/internal/dns/providers"
 	"deploy/internal/config"
 	"deploy/cmd/app"
 
@@ -17,6 +18,7 @@ var (
 	waitFlag  bool
 	asyncFlag bool
 )
+var Version = "dev"
 
 // rootCmd represents the base command.
 var rootCmd = &cobra.Command{
@@ -29,6 +31,7 @@ var rootCmd = &cobra.Command{
 			"daemon":     true,
 			"help":       true,
 			"completion": true,
+			"version":    true,
 		}
 		if skipCommands[cmd.Name()] || cmd.Parent() == nil {
 			return nil
@@ -57,6 +60,16 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(app.Cmd)
+
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(Version)
+		},
+	}
+	rootCmd.AddCommand(versionCmd)
 }
 
 // newClient creates a deploy client connected to the daemon socket.

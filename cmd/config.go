@@ -17,6 +17,8 @@ var configCmd = &cobra.Command{
 	Long:  `View and set daemon configuration settings (stored in SQLite).`,
 }
 
+var configGetReveal bool
+
 var configGetCmd = &cobra.Command{
 	Use:   "get [key]",
 	Short: "Get a setting or all settings",
@@ -25,7 +27,13 @@ var configGetCmd = &cobra.Command{
 		c := newClient()
 
 		if len(args) > 0 {
-			settings, err := c.GetConfig()
+			var settings map[string]string
+			var err error
+			if configGetReveal {
+				settings, err = c.GetConfigKey(args[0], true)
+			} else {
+				settings, err = c.GetConfig()
+			}
 			if err != nil {
 				return fmt.Errorf("get config: %w", err)
 			}
@@ -102,6 +110,7 @@ var configSetCmd = &cobra.Command{
 }
 
 func init() {
+	configGetCmd.Flags().BoolVar(&configGetReveal, "reveal", false, "Reveal secret setting values")
 	configCmd.AddCommand(configGetCmd)
 	configCmd.AddCommand(configSetCmd)
 	rootCmd.AddCommand(configCmd)

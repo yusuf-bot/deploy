@@ -889,3 +889,137 @@ func TestContainerLogsReturnsEmptyForNoContainer(t *testing.T) {
 		t.Errorf("expected 0 entries for app with no container, got %d", len(entries))
 	}
 }
+
+// --- validateDir tests ---
+
+func TestValidateDir_EmptyDefaultsToDot(t *testing.T) {
+	got, err := validateDir("")
+	if err != nil {
+		t.Fatalf("validateDir(%q): unexpected error: %v", "", err)
+	}
+	if got != "." {
+		t.Errorf("expected %q, got %q", ".", got)
+	}
+}
+
+func TestValidateDir_DotAllowed(t *testing.T) {
+	got, err := validateDir(".")
+	if err != nil {
+		t.Fatalf("validateDir(%q): unexpected error: %v", ".", err)
+	}
+	if got != "." {
+		t.Errorf("expected %q, got %q", ".", got)
+	}
+}
+
+func TestValidateDir_RelativeSubdir(t *testing.T) {
+	got, err := validateDir("myapp")
+	if err != nil {
+		t.Fatalf("validateDir(%q): unexpected error: %v", "myapp", err)
+	}
+	if got != "myapp" {
+		t.Errorf("expected %q, got %q", "myapp", got)
+	}
+}
+
+func TestValidateDir_NestedRelativePath(t *testing.T) {
+	got, err := validateDir("checkouts/myapp/src")
+	if err != nil {
+		t.Fatalf("validateDir(%q): unexpected error: %v", "checkouts/myapp/src", err)
+	}
+	if got != "checkouts/myapp/src" {
+		t.Errorf("expected %q, got %q", "checkouts/myapp/src", got)
+	}
+}
+
+func TestValidateDir_RejectsParentDir(t *testing.T) {
+	_, err := validateDir("..")
+	if err == nil {
+		t.Fatal("expected error for \"..\", got nil")
+	}
+}
+
+func TestValidateDir_RejectsParentTraversal(t *testing.T) {
+	_, err := validateDir("../etc")
+	if err == nil {
+		t.Fatal("expected error for \"../etc\", got nil")
+	}
+}
+
+func TestValidateDir_RejectsDeepParentTraversal(t *testing.T) {
+	_, err := validateDir("../../../../etc")
+	if err == nil {
+		t.Fatal("expected error for \"../../../../etc\", got nil")
+	}
+}
+
+func TestValidateDir_RejectsAbsolutePath(t *testing.T) {
+	_, err := validateDir("/etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for \"/etc/passwd\", got nil")
+	}
+}
+
+func TestValidateDir_CleansEmbeddedTraversal(t *testing.T) {
+	// "subdir/../../etc" cleans to "../etc" — should be rejected
+	_, err := validateDir("subdir/../../etc")
+	if err == nil {
+		t.Fatal("expected error for \"subdir/../../etc\", got nil")
+	}
+}
+
+func TestValidateDir_CleansRedundantSlash(t *testing.T) {
+	got, err := validateDir("myapp///deploy")
+	if err != nil {
+		t.Fatalf("validateDir(%q): unexpected error: %v", "myapp///deploy", err)
+	}
+	if got != "myapp/deploy" {
+		t.Errorf("expected %q, got %q", "myapp/deploy", got)
+	}
+}
+
+// --- API-level path traversal rejection tests ---
+
+func TestPromoteRejectsPathTraversal(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create an app first
+	body := types.CreateAppRequest{Name: "traversal-test", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Promote with path traversal in dir — should get 400
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]string{"dir": "../../etc"})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/traversal-test/promote", &buf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for path traversal, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestPromoteRejectsAbsoluteDir(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create an app first
+	body := types.CreateAppRequest{Name: "abs-test", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Promote with absolute path in dir — should get 400
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]string{"dir": "/tmp"})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/abs-test/promote", &buf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for absolute dir, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}

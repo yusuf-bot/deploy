@@ -7,17 +7,29 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"deploy/internal/config"
 	"deploy/internal/build"
+	"deploy/internal/dns"
 	"deploy/internal/state"
 	"deploy/internal/types"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/google/uuid"
 )
+
+// secretSettings are settings keys whose values should be encrypted at rest
+// and masked in API responses unless explicitly revealed.
+var secretSettings = map[string]bool{
+	"dns_token":  true,
+	"dns_secret": true,
+}
 
 // --- Health ---
 
@@ -295,7 +307,8 @@ func (s *Server) startAppContainer(ctx context.Context, app *types.App) (string,
 		return "", fmt.Errorf("pull image: %w", err)
 	}
 
-	containerID, err := s.runner.CreateContainer(ctx, app)
+	ver := fmt.Sprintf("manual-%d", time.Now().Unix())
+	containerID, err := s.runner.CreateContainer(ctx, app, ver)
 	if err != nil {
 		return "", fmt.Errorf("create container: %w", err)
 	}
@@ -353,7 +366,8 @@ func (s *Server) getContainerLogs(ctx context.Context, containerID string) strin
 	}
 	reader, err := s.runner.GetContainerLogs(ctx, containerID, 50, false)
 	if err != nil {
-		return fmt.Sprintf("(failed to get logs: %v)", err)
+		log.Printf("get container logs: %v", err)
+		return "(failed to get logs: internal server error)"
 	}
 	defer reader.Close()
 	data, _ := io.ReadAll(reader)
@@ -432,6 +446,146 @@ func (s *Server) stopAppContainer(ctx context.Context, app *types.App) (string, 
 	app.Status = types.StatusStopped
 	return fmt.Sprintf("stopped app %q", app.Name), nil
 }
+
+// handleDevStart starts a development container for an app.
+func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	app, err := state.GetAppByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	// Build dev config
+	devPort := app.Port + 1000
+	if devPort > 65535 {
+		writeError(w, http.StatusBadRequest, BadRequestError("port overflow: app port too high"))
+		return
+	}
+
+	// Try to parse deploy.yml for dev config
+	deployDir := config.DeployDirPath()
+	checkoutPath := filepath.Join(deployDir, "git", "checkouts", name, "deploy.yml")
+	var devVolumes []types.VolumeMapping
+	var devCmd string
+	if data, err := os.ReadFile(checkoutPath); err == nil {
+		var dc types.DeployConfig
+		if yaml.Unmarshal(data, &dc) == nil && dc.Dev != nil {
+			devVolumes = dc.Dev.Volumes
+			devCmd = dc.Dev.Command
+			if dc.Dev.Port > 0 {
+				devPort = dc.Dev.Port
+			}
+		}
+	}
+
+	// Validate dev volumes
+	var validatedVolumes []types.VolumeMapping
+	for _, v := range devVolumes {
+		if !filepath.IsAbs(v.Source) {
+			log.Printf("warning: dev volume source %q is not absolute, skipping", v.Source)
+			continue
+		}
+		if _, err := os.Stat(v.Source); os.IsNotExist(err) {
+			log.Printf("warning: dev volume source %q does not exist, skipping", v.Source)
+			continue
+		}
+		validatedVolumes = append(validatedVolumes, v)
+	}
+
+	// Create a dev copy of the app
+	devApp := *app
+	devApp.Dev = true
+	devApp.Port = devPort
+	devApp.Volumes = validatedVolumes
+	devApp.Command = devCmd
+
+	if err := s.runner.PullImage(r.Context(), app.Image); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		return
+	}
+
+	ver := fmt.Sprintf("dev-%d", time.Now().Unix())
+	containerID, err := s.runner.CreateContainer(r.Context(), &devApp, ver)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		return
+	}
+
+	if err := s.runner.StartContainer(r.Context(), containerID); err != nil {
+		s.runner.RemoveContainer(r.Context(), containerID)
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		return
+	}
+
+	trackDevContainer(name, containerID)
+
+	writeJSON(w, http.StatusOK, types.StartStopResponse{
+		Container: shortID(containerID),
+		Message:   fmt.Sprintf("dev container for %q started on port %d", name, devPort),
+	})
+}
+
+// handleDevStop stops and removes a development container.
+func (s *Server) handleDevStop(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	containerID, found := getDevContainer(name)
+	if !found {
+		// Try to find dev container by labels as fallback
+		var err error
+		containerID, err = s.runner.FindDevContainer(r.Context(), name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			return
+		}
+		if containerID == "" {
+			writeJSON(w, http.StatusOK, types.StartStopResponse{
+				Message: fmt.Sprintf("no dev container found for %q", name),
+			})
+			return
+		}
+	}
+
+	if err := s.runner.StopContainer(r.Context(), containerID); err != nil {
+		// If container already gone, clean up tracking and return success
+		untrackDevContainer(name)
+		log.Printf("dev stop: container %s already stopped/removed: %v", shortID(containerID), err)
+		writeJSON(w, http.StatusOK, types.StartStopResponse{
+			Message: fmt.Sprintf("dev container for %q stopped (was already gone)", name),
+		})
+		return
+	}
+	if err := s.runner.RemoveContainer(r.Context(), containerID); err != nil {
+		// Clean up tracking even if remove fails
+		untrackDevContainer(name)
+		log.Printf("dev stop: container %s remove error: %v", shortID(containerID), err)
+		writeJSON(w, http.StatusOK, types.StartStopResponse{
+			Message: fmt.Sprintf("dev container for %q stopped (remove warning)", name),
+		})
+		return
+	}
+
+	untrackDevContainer(name)
+
+	writeJSON(w, http.StatusOK, types.StartStopResponse{
+		Message: fmt.Sprintf("dev container for %q stopped", name),
+	})
+}
+
 
 // --- Get Logs ---
 
@@ -515,7 +669,8 @@ func (s *Server) streamLogsSSE(w http.ResponseWriter, r *http.Request, container
 
 	reader, err := s.runner.GetContainerLogs(r.Context(), containerID, tail, true)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: %v\n\n", err)
+		log.Printf("SSE error: %v", err)
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", "internal server error")
 		flusher.Flush()
 		return
 	}
@@ -530,7 +685,8 @@ func (s *Server) streamLogsSSE(w http.ResponseWriter, r *http.Request, container
 			n, err := reader.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					fmt.Fprintf(w, "event: error\ndata: %v\n\n", err)
+					log.Printf("SSE error: %v", err)
+					fmt.Fprintf(w, "event: error\ndata: %s\n\n", "internal server error")
 					flusher.Flush()
 				}
 				return
@@ -570,6 +726,25 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+
+// validateDir normalizes and validates a directory path to prevent path traversal.
+// Returns the cleaned relative path or an error if the path is absolute or
+// contains parent-directory ("..") traversal.
+func validateDir(dir string) (string, error) {
+	if dir == "" {
+		return ".", nil
+	}
+	cleaned := filepath.Clean(dir)
+	if filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("dir must be a relative path, got %q", dir)
+	}
+	// After Clean, ".." can only appear as a leading component (traversal attempt).
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("dir cannot contain parent directory traversal (..)")
+	}
+	return cleaned, nil
+}
+
 // --- Promote ---
 
 func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
@@ -586,6 +761,12 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		req.Dir = "."
 	}
 
+	dir, err := validateDir(req.Dir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, BadRequestError(err.Error()))
+		return
+	}
+
 	wait := r.URL.Query().Get("wait") != "false"
 
 	if !wait {
@@ -594,7 +775,7 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 			if s.deployer == nil {
 				return "", fmt.Errorf("deployer not available")
 			}
-			resp, err := s.deployer.Promote(ctx, &types.PromoteRequest{}, name, req.Dir)
+			resp, err := s.deployer.Promote(ctx, &types.PromoteRequest{}, name, dir)
 			if err != nil {
 				return "", err
 			}
@@ -612,7 +793,7 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.deployer.Promote(r.Context(), &types.PromoteRequest{}, name, req.Dir)
+	resp, err := s.deployer.Promote(r.Context(), &types.PromoteRequest{}, name, dir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
 		return
@@ -1046,10 +1227,41 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 // --- Config (settings) ---
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	reveal := r.URL.Query().Get("reveal") == "true"
+
+	if key != "" {
+		if secretSettings[key] && reveal {
+			val, err := state.EncryptedGetSetting(s.db, key, s.masterKey)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{key: val})
+			return
+		}
+
+		val, err := state.GetSetting(s.db, key)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			return
+		}
+		if secretSettings[key] {
+			val = "***"
+		}
+		writeJSON(w, http.StatusOK, map[string]string{key: val})
+		return
+	}
+
 	settings, err := state.GetAllSettings(s.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
 		return
+	}
+	for k := range settings {
+		if secretSettings[k] {
+			settings[k] = "***"
+		}
 	}
 	writeJSON(w, http.StatusOK, settings)
 }
@@ -1066,10 +1278,225 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range req {
-		if err := state.SetSetting(s.db, k, v); err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
-			return
+		if secretSettings[k] {
+			if err := state.EncryptedSetSetting(s.db, k, v, s.masterKey); err != nil {
+				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				return
+			}
+		} else {
+			if err := state.SetSetting(s.db, k, v); err != nil {
+				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "settings updated"})
+}
+
+// --- DNS Automation (Phase 8) ---
+
+// DNSSyncRequest is the JSON body for POST /api/v1/apps/{name}/dns/sync.
+type DNSSyncRequest struct {
+	IPv4 string `json:"ipv4,omitempty"`
+	IPv6 string `json:"ipv6,omitempty"`
+}
+
+// DNSSyncResult records the result of syncing a single DNS record.
+type DNSSyncResult struct {
+	Domain  string `json:"domain"`
+	Type    string `json:"type"`
+	Value   string `json:"value"`
+	Existed bool   `json:"existed"`
+}
+
+// DNSSyncResponse is the response for a DNS sync operation.
+type DNSSyncResponse struct {
+	Results []DNSSyncResult `json:"results"`
+	Errors  []string        `json:"errors,omitempty"`
+}
+
+func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	app, err := state.GetAppByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	var req DNSSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid JSON body"))
+		return
+	}
+	if req.IPv4 == "" && req.IPv6 == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("at least one of ipv4 or ipv6 required"))
+		return
+	}
+
+	// Get DNS provider config from settings
+	providerName, _ := state.GetSetting(s.db, "dns_provider")
+	if providerName == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("dns_provider not configured; set via 'deploy config set dns_provider <name>'"))
+		return
+	}
+	dnsToken, err := state.EncryptedGetSetting(s.db, "dns_token", s.masterKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+	if dnsToken == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("dns_token not configured"))
+		return
+	}
+	dnsSecret, err := state.EncryptedGetSetting(s.db, "dns_secret", s.masterKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	prov, err := dns.Get(providerName, dns.Config{Token: dnsToken, Secret: dnsSecret})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	// Get domains for this app
+	domains, err := state.ListDomainsByApp(s.db, app.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	if len(domains) == 0 {
+		writeJSON(w, http.StatusOK, DNSSyncResponse{Results: []DNSSyncResult{}})
+		return
+	}
+
+	var results []DNSSyncResult
+	var errs []string
+
+	for _, d := range domains {
+		if req.IPv4 != "" {
+			id, existed, err := prov.EnsureRecord(r.Context(), d.Domain, "", "A", req.IPv4, 300)
+			if err != nil {
+				log.Printf("DNS sync A record error for %s: %v", d.Domain, err)
+				errs = append(errs, fmt.Sprintf("%s A: internal server error", d.Domain))
+			} else {
+				results = append(results, DNSSyncResult{
+					Domain:  d.Domain,
+					Type:    "A",
+					Value:   req.IPv4,
+					Existed: existed,
+				})
+			}
+			_ = id // record ID available if needed
+		}
+		if req.IPv6 != "" {
+			id, existed, err := prov.EnsureRecord(r.Context(), d.Domain, "", "AAAA", req.IPv6, 300)
+			if err != nil {
+				log.Printf("DNS sync AAAA record error for %s: %v", d.Domain, err)
+				errs = append(errs, fmt.Sprintf("%s AAAA: internal server error", d.Domain))
+			} else {
+				results = append(results, DNSSyncResult{
+					Domain:  d.Domain,
+					Type:    "AAAA",
+					Value:   req.IPv6,
+					Existed: existed,
+				})
+			}
+			_ = id
+		}
+	}
+
+	writeJSON(w, http.StatusOK, DNSSyncResponse{
+		Results: results,
+		Errors:  errs,
+	})
+}
+
+func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	app, err := state.GetAppByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	// Get DNS provider config from settings
+	providerName, _ := state.GetSetting(s.db, "dns_provider")
+	if providerName == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("dns_provider not configured"))
+		return
+	}
+	dnsToken, err := state.EncryptedGetSetting(s.db, "dns_token", s.masterKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+	if dnsToken == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("dns_token not configured"))
+		return
+	}
+	dnsSecret, err := state.EncryptedGetSetting(s.db, "dns_secret", s.masterKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	prov, err := dns.Get(providerName, dns.Config{Token: dnsToken, Secret: dnsSecret})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	// Get domains for this app
+	domains, err := state.ListDomainsByApp(s.db, app.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		return
+	}
+
+	var allRecords []dns.Record
+	for _, d := range domains {
+		records, err := prov.ListRecords(r.Context(), d.Domain)
+		if err != nil {
+			log.Printf("warning: list records for %s: %v", d.Domain, err)
+			continue
+		}
+		allRecords = append(allRecords, records...)
+	}
+
+	if allRecords == nil {
+		allRecords = []dns.Record{}
+	}
+
+	writeJSON(w, http.StatusOK, allRecords)
+}
+
+// --- Shutdown ---
+
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"message": "shutting down"})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}()
 }

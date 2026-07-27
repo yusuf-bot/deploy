@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // GetSetting retrieves a setting value by key.
@@ -47,4 +48,31 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 		settings[k] = v
 	}
 	return settings, rows.Err()
+}
+
+// EncryptedSetSetting encrypts the value with master key before storing.
+func EncryptedSetSetting(db *sql.DB, key, value string, masterKey []byte) error {
+	encrypted, err := EncryptSecret([]byte(value), masterKey)
+	if err != nil {
+		return fmt.Errorf("encrypt setting %q: %w", key, err)
+	}
+	return SetSetting(db, key, "enc:"+encrypted)
+}
+
+// EncryptedGetSetting decrypts a value stored by EncryptedSetSetting.
+// Returns the plaintext value. For backward compatibility, if the stored
+// value does not have the "enc:" prefix it is returned as-is.
+func EncryptedGetSetting(db *sql.DB, key string, masterKey []byte) (string, error) {
+	val, err := GetSetting(db, key)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(val, "enc:") {
+		return val, nil
+	}
+	decrypted, err := DecryptSecret(val[4:], masterKey)
+	if err != nil {
+		return "", fmt.Errorf("decrypt setting %q: %w", key, err)
+	}
+	return string(decrypted), nil
 }

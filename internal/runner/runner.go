@@ -30,18 +30,22 @@ func NewDockerRunner() (*DockerRunner, error) {
 	return &DockerRunner{cli: cli}, nil
 }
 
-// containerName generates a unique container name with random suffix.
-func containerName(appID string) string {
-	return fmt.Sprintf("deploy-%s", appID[:8])
+// containerName generates a unique container name scoped by app ID and version.
+func containerName(appID, version string) string {
+	return fmt.Sprintf("deploy-%s-%s", appID[:8], version)
 }
 
 // buildContainerLabels returns the standard labels for deploy-managed containers.
 func buildContainerLabels(app *types.App) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		"deploy.managed":  "true",
 		"deploy.app.id":   app.ID,
 		"deploy.app.name": app.Name,
 	}
+	if app.Dev {
+		labels["deploy.dev"] = "true"
+	}
+	return labels
 }
 
 // PullImage ensures the Docker image is available locally.
@@ -56,7 +60,7 @@ func (d *DockerRunner) PullImage(ctx context.Context, imageStr string) error {
 }
 
 // CreateContainer creates a container but does not start it.
-func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App) (string, error) {
+func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App, version string) (string, error) {
 	portStr := fmt.Sprintf("%d/tcp", app.Port)
 	np := network.MustParsePort(portStr)
 
@@ -83,16 +87,31 @@ func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App) (str
 		Env:          envVars,
 		Labels:       buildContainerLabels(app),
 	}
+	if app.Command != "" {
+		cfg.Cmd = []string{"sh", "-c", app.Command}
+	}
 
 	hostCfg := &container.HostConfig{
 		PortBindings:  portBindings,
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
 	}
 
+	if len(app.Volumes) > 0 {
+		binds := make([]string, 0, len(app.Volumes))
+		for _, v := range app.Volumes {
+			binds = append(binds, v.Source+":"+v.Target)
+		}
+		hostCfg.Binds = binds
+	}
+
+	name := containerName(app.ID, version)
+	// Remove any zombie container with the same name (best-effort)
+	_, _ = d.cli.ContainerRemove(ctx, name, client.ContainerRemoveOptions{Force: true})
+
 	opts := client.ContainerCreateOptions{
 		Config:     cfg,
 		HostConfig: hostCfg,
-		Name:       fmt.Sprintf("deploy-%s", app.ID[:8]),
+		Name:       name,
 	}
 
 	resp, err := d.cli.ContainerCreate(ctx, opts)
@@ -192,6 +211,9 @@ func (d *DockerRunner) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		if appID, ok := c.Labels["deploy.app.id"]; ok {
 			info.AppID = appID
 		}
+		if _, ok := c.Labels["deploy.dev"]; ok {
+			info.IsDev = true
+		}
 		infos = append(infos, info)
 	}
 	return infos, nil
@@ -199,6 +221,23 @@ func (d *DockerRunner) ListContainers(ctx context.Context) ([]ContainerInfo, err
 
 // FindContainerByLabel finds a container by a label key=value pair.
 // Returns the container ID or empty string if not found.
+func (d *DockerRunner) FindDevContainer(ctx context.Context, appName string) (string, error) {
+	f := make(client.Filters)
+	f.Add("label", "deploy.app.name="+appName)
+	f.Add("label", "deploy.dev=true")
+	containers, err := d.cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: f,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(containers.Items) == 0 {
+		return "", nil
+	}
+	return containers.Items[0].ID, nil
+}
+
 func (d *DockerRunner) FindContainerByLabel(ctx context.Context, key, value string) (string, error) {
 	f := make(client.Filters)
 	f.Add("label", key+"="+value)

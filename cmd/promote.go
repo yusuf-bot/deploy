@@ -34,7 +34,7 @@ var promoteCmd = &cobra.Command{
 			}
 		}
 
-		wait := !asyncFlag
+		wait := waitFlag
 
 		c := newClient()
 		resp, err := c.Promote(appName, promoteDir, wait)

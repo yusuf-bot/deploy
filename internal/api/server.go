@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -44,7 +45,31 @@ func NewServer(db *sql.DB, r runner.Interface, sched *scheduler.Scheduler, d *de
 		socketPath:   socketPath,
 	}
 	s.registerRoutes()
+	s.reconcileDevContainers()
 	return s
+}
+
+// reconcileDevContainers scans Docker for existing dev containers and rebuilds the sync.Map.
+func (s *Server) reconcileDevContainers() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	containers, err := s.runner.ListContainers(ctx)
+	if err != nil {
+		log.Printf("dev reconcile: list containers: %v", err)
+		return
+	}
+
+	count := 0
+	for _, c := range containers {
+		if c.IsDev {
+			trackDevContainer(c.AppID, c.ID)
+			count++
+		}
+	}
+	if count > 0 {
+		log.Printf("dev reconcile: tracked %d existing dev container(s)", count)
+	}
 }
 
 // ListenAndServe starts the Unix socket listener.
@@ -72,6 +97,9 @@ func (s *Server) registerRoutes() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+
+	// Shutdown
+	mux.HandleFunc("POST /api/v1/shutdown", s.handleShutdown)
 
 	mux.HandleFunc("POST /api/v1/apps", s.handleCreateApp)
 	mux.HandleFunc("GET /api/v1/apps", s.handleListApps)
@@ -108,6 +136,18 @@ func (s *Server) registerRoutes() {
 	// Phase 4: config/settings
 	mux.HandleFunc("GET /api/v1/config", s.handleGetConfig)
 	mux.HandleFunc("PUT /api/v1/config", s.handleSetConfig)
+
+	// Phase 6: backup
+	mux.HandleFunc("POST /api/v1/backup", s.handleBackup)
+
+	// Phase 7: dev containers
+	mux.HandleFunc("POST /api/v1/apps/{name}/dev/start", s.handleDevStart)
+	mux.HandleFunc("POST /api/v1/apps/{name}/dev/stop", s.handleDevStop)
+
+	// Phase 8: DNS automation
+	mux.HandleFunc("POST /api/v1/apps/{name}/dns/sync", s.handleDNSSync)
+	mux.HandleFunc("GET /api/v1/apps/{name}/dns/records", s.handleDNSList)
+
 
 	s.mux = panicRecoveryMiddleware(loggingMiddleware(mux))
 }
