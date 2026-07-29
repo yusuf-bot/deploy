@@ -27,13 +27,7 @@ var configGetCmd = &cobra.Command{
 		c := newClient()
 
 		if len(args) > 0 {
-			var settings map[string]string
-			var err error
-			if configGetReveal {
-				settings, err = c.GetConfigKey(args[0], true)
-			} else {
-				settings, err = c.GetConfig()
-			}
+			settings, err := c.GetConfigKey(args[0], configGetReveal)
 			if err != nil {
 				return fmt.Errorf("get config: %w", err)
 			}
@@ -42,7 +36,10 @@ var configGetCmd = &cobra.Command{
 				return fmt.Errorf("setting %q not found", args[0])
 			}
 			if jsonFlag {
-				data, _ := json.MarshalIndent(map[string]string{args[0]: val}, "", "  ")
+				data, err := json.MarshalIndent(map[string]string{args[0]: val}, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
 				fmt.Println(string(data))
 				return nil
 			}
@@ -56,7 +53,10 @@ var configGetCmd = &cobra.Command{
 		}
 
 		if jsonFlag {
-			data, _ := json.MarshalIndent(settings, "", "  ")
+			data, err := json.MarshalIndent(settings, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
 			fmt.Println(string(data))
 			return nil
 		}
@@ -86,25 +86,37 @@ var configGetCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set key=val",
 	Short: "Set a setting",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		kv := strings.SplitN(args[0], "=", 2)
-		if len(kv) != 2 || kv[0] == "" {
-			return fmt.Errorf("invalid format, use key=val")
+		var key, value string
+		if len(args) == 1 {
+			parts := strings.SplitN(args[0], "=", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid format, use: key=val or key val")
+			}
+			key, value = parts[0], parts[1]
+		} else {
+			key, value = args[0], args[1]
 		}
 
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+
 		c := newClient()
-		if err := c.SetConfig(kv[0], kv[1]); err != nil {
+		if err := c.SetConfig(key, value); err != nil {
 			return fmt.Errorf("set config: %w", err)
 		}
 
 		if jsonFlag {
-			data, _ := json.MarshalIndent(map[string]string{"message": fmt.Sprintf("setting %q updated", kv[0])}, "", "  ")
+			data, err := json.MarshalIndent(map[string]string{"message": fmt.Sprintf("setting %q updated", key)}, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
 			fmt.Println(string(data))
 			return nil
 		}
 
-		fmt.Printf("Setting %q updated to %q\n", kv[0], kv[1])
+		fmt.Printf("Setting %q updated to %q\n", key, value)
 		return nil
 	},
 }

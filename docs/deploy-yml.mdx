@@ -1,0 +1,82 @@
+---
+title: deploy.yml Reference
+description: Every configuration option for your app's deploy.yml.
+---
+
+# deploy.yml Reference
+
+Each app has a `deploy.yml` file in its project root. This is the only configuration file you need.
+
+## Minimal Example
+
+```yaml
+app: myapp
+build:
+  context: .
+ports:
+  - container: 8080
+health:
+  path: /health
+```
+
+## Full Example
+
+```yaml
+app: myapp
+build:
+  dockerfile: Dockerfile
+  context: .
+  args:
+    NODE_ENV: production
+
+ports:
+  - container: 8080
+
+health:
+  path: /health
+  initial_delay: 5s
+  interval: 3s
+  timeout: 5s
+  retries: 15
+
+domains:
+  - myapp.example.com
+
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+
+resources:
+  memory: 512m
+  cpus: "0.5"
+
+dev:
+  command: npm run dev
+  port: 3000
+```
+
+## Fields
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `app` | Yes | — | App name (must match `deploy app create <name>`) |
+| `build.dockerfile` | No | `Dockerfile` | Path to Dockerfile |
+| `build.context` | No | `.` | Docker build context directory |
+| `build.args` | No | `{}` | Build-time variables (`--build-arg`) |
+| `ports[].container` | Yes | — | Container port to expose |
+| `health.path` | No | `/` | Health check endpoint |
+| `health.initial_delay` | No | `1s` | Delay before first check |
+| `health.interval` | No | `2s` | Time between checks |
+| `health.timeout` | No | `5s` | Per-check timeout |
+| `health.retries` | No | `15` | Fail after N failed checks |
+| `domains` | No | `[]` | Domains to route to this app |
+| `env` | No | `{}` | Environment variables (overrides app env from DB) |
+| `resources.memory` | No | — | Memory limit (e.g., `512m`, `1g`) |
+| `resources.cpus` | No | — | CPU limit (e.g., `0.5`, `2`) |
+| `dev.command` | No | — | Dev mode command (e.g., `npm run dev`) |
+| `dev.port` | No | — | Dev mode port |
+
+## deploy.yml vs docker-compose.yml
+
+- **deploy.yml**: Production configuration for deploy. Committed to your repo.
+- **docker-compose.yml**: Local development. deploy never touches it.

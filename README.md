@@ -1,274 +1,128 @@
-# deploy — single-binary personal PaaS
+# deploy — self-hosted platform for solo devs, startups, and SMEs
 
-Deploy is a single-binary, agent-first personal PaaS for managing Docker containers on a single server. It provides a persistent daemon with a Unix socket API, Docker-based deployment pipeline, Caddy reverse proxy with automatic SSL, and SQLite-backed state management.
+![Version](https://img.shields.io/badge/version-0.3.0-10b981)
+[![Website](https://img.shields.io/badge/website-deploy.openexplorer.xyz-10b981)](https://deploy.openexplorer.xyz)
+[![Docs](https://img.shields.io/badge/docs-docs.deploy.openexplorer.xyz-059669)](https://docs.deploy.openexplorer.xyz)
+[![GitHub](https://img.shields.io/badge/github-yusuf--bot/deploy-1a1a2e)](https://github.com/yusuf-bot/deploy)
 
-Key features:
-- Single 21MB Go binary, no CGO, no PostgreSQL, no Redis
-- Docker build + deploy pipeline with health checks and rollbacks
-- Caddy reverse proxy with automatic Let's Encrypt SSL
-- Git push deploy workflow
-- Development containers with volume mounts
-- Encrypted secrets (AES-256-GCM)
-- DNS record management (6 providers)
-- Audit logging and backup/restore
+Deploy is a single-binary, CLI-first platform for deploying and managing applications on your own server. Think Heroku-quality DX without the Heroku bill — one 21MB binary, zero dependencies beyond Docker, and everything you need to go from `curl` to `https://yourapp.com` in under 3 minutes.
+
+## Who is this for?
+
+| Audience | Use case |
+|----------|----------|
+| **Solo devs** | 1-5 side projects, personal apps, family tools. Low complexity, low cost. |
+| **Startups** | 3-15 people, staging + production envs, CI/CD pipeline, preview deploys |
+| **SMEs** | 15-100 people, team permissions, audit trails, uptime monitoring |
+
+Right now we're building for **solo devs first**. Everything works for one person on one server. Team features, preview deploys, and RBAC come as we grow.
 
 ## Quick Start
 
 ```bash
-# Install (one of these):
-curl -fsSL https://deploy.sh | sh
+# One command — downloads binary, checks Docker, installs Caddy
+curl -fsSL https://deploy.openexplorer.xyz/install.sh | sh
 
-# Initialize the environment
-deploy init
+# Interactive setup wizard (prompts for DNS, auto-start, systemd)
+sudo deploy init
 
-# Deploy your first app
+# Scaffold deploy.yml + Dockerfile for your project (auto-detects stack)
 cd my-project
-deploy promote myapp
+deploy scaffold
+
+# Deploy — builds, health checks, zero-downtime swap
+deploy up myapp
+
+# Add a domain + automatic SSL + DNS sync
+deploy domain add myapp example.com
+deploy domain dns sync myapp
 ```
 
-## Install
+## What makes deploy different
 
-### Option 1: Install script
+**Everything built-in, nothing to install.** No PostgreSQL, no Redis, no Kubernetes, no plugin hunt. One binary, one daemon, one SQLite file.
 
-```bash
-curl -fsSL https://deploy.sh | sh
-```
+**CLI-first, composable.** Works in CI, over SSH, in GitHub Actions, in scripts. `deploy up`, `deploy rollback`, `deploy status` — every command works without a browser.
 
-Downloads the latest release binary to `/usr/local/bin/deploy`.
+**Agent-native.** MCP server on the roadmap means AI can manage your deploys directly.
 
-### Option 2: Pre-built binary
+**Zero-downtime deploys.** Build → start new container on separate port → health check → update Caddy → stop old. Old container never killed until new one is healthy.
 
-Download from [GitHub Releases](https://github.com/yusuf-bot/deploy/releases):
+**DNS + SSL in one command.** Attach a domain, sync DNS records (6 providers), and Caddy handles Let's Encrypt automatically.
 
-```bash
-curl -fsSL https://github.com/yusuf-bot/deploy/releases/download/v0.2.0/deploy_v0.2.0_linux_amd64.tar.gz
-tar -xzf deploy_v0.2.0_linux_amd64.tar.gz
-sudo cp deploy /usr/local/bin/deploy
-```
+**Encrypted secrets.** AES-256-GCM encrypted at rest, decrypted only at runtime.
 
-### Option 3: Build from source
+## Features
 
-```bash
-git clone https://github.com/yusuf-bot/deploy.git
-cd deploy
-go build -o bin/deploy .
-sudo cp bin/deploy /usr/local/bin/deploy
-```
+### Core
+- `deploy up` — Build Docker image, run health checks, zero-downtime swap
+- `deploy rollback` — Revert to any of the last 5 deployed versions
+- `deploy start/stop/restart/rm` — Full app lifecycle
+- `deploy status` — See all apps and their health
+- `deploy logs` — Stream container logs
 
-Requires Go 1.26+. No CGO required.
+### Domains & DNS
+- `deploy domain add/rm/ls` — Attach domains to apps
+- `deploy domain dns sync` — Auto-create A/AAAA records (6 providers)
+- Automatic Let's Encrypt SSL via Caddy
 
-## Initialize
-
-```bash
-deploy init
-```
-
-This creates:
-- `~/.deploy/` data directory with SQLite database and configuration
-- `~/.deploy/master.key` AES-256-GCM master key (0600 permissions)
-- `~/.deploy/caddy/` Caddy working directory
-- Optionally downloads Caddy v2.8+ for reverse proxy and SSL termination
-
-## Start the daemon
-
-```bash
-deploy daemon
-```
-
-The daemon runs as a foreground process. For production, use the provided systemd unit:
-
-```
-[Unit]
-Description=deploy daemon
-After=docker.service
-Requires=docker.service
-
-[Service]
-ExecStart=/usr/local/bin/deploy daemon
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Configuration
-
-### deploy.yml
-
-Place a `deploy.yml` in your project root to define build and runtime configuration:
-
-```yaml
-build:
-  dockerfile: Dockerfile
-  context: .
-  args:
-    NODE_ENV: production
-
-health:
-  path: /health
-  initial_delay: 2s
-  interval: 3s
-  timeout: 5s
-  retries: 10
-
-ports:
-  - container: 8080
-
-domains:
-  - example.com
-
-env:
-  NODE_ENV: production
-  LOG_LEVEL: info
-
-dev:
-  command: npm run dev
-  port: 3000
-  volumes:
-    - source: ./src
-      target: /app/src
-```
-
-All fields are optional. The daemon validates the YAML strictly (unknown fields produce errors).
-
-### Daemon settings
-
-```bash
-deploy config set dns_provider cloudflare
-deploy config set dns_token <api-token>     # stored encrypted
-deploy config get dns_token                 # shows ***
-deploy config get dns_token --reveal        # shows plaintext
-deploy config get                           # list all settings
-```
-
-Sensitive settings (`dns_token`, `dns_secret`) are automatically encrypted with the master key before storage.
-
-## Command Reference
-
-### Deployment
-
-| Command | Description |
-|---------|-------------|
-| `deploy promote <app>` | Build Docker image, start new container on port+1, health check, stop old container |
-| `deploy rollback <app> [version]` | Rollback to a previous deployment version |
-| `deploy status [app]` | Show deployment status for all apps or one app |
-| `deploy logs <app>` | Stream container logs |
-| `deploy stop <app>` | Gracefully stop a container (SIGTERM + 30s grace period) |
-| `deploy restart <app>` | Sequential stop then start |
-| `deploy rm <app>` | Remove an app with clean teardown (requires confirmation) |
-
-### Domains and DNS
-
-| Command | Description |
-|---------|-------------|
-| `deploy domain add <app> <domain>` | Attach a domain to an app (updates Caddy config) |
-| `deploy domain rm <app> <domain>` | Remove a domain from an app |
-| `deploy domain ls [app]` | List domains |
-| `deploy domain dns sync <app> --ipv4 <ip> [--ipv6 <ip>]` | Create or update A/AAAA records for all app domains |
-| `deploy domain dns list <app>` | List DNS records for app domains |
-
-### Secrets (encrypted)
-
-| Command | Description |
-|---------|-------------|
-| `deploy secrets set <app> <key>=<value>` | Add or update an encrypted secret |
-| `deploy secrets get <app> <key>` | Retrieve a decrypted secret value |
-| `deploy secrets rm <app> <key>` | Remove a secret |
-| `deploy secrets ls <app>` | List secret keys |
+### Secrets
+- `deploy secrets set/get/rm/ls` — AES-256-GCM encrypted
+- Decrypted at runtime, passed as container env vars
 
 ### Development
-
-| Command | Description |
-|---------|-------------|
-| `deploy dev start <app>` | Start a development container with volume mounts (port = app.port + 1000) |
-| `deploy dev stop <app>` | Stop and remove the development container |
-
-### Git push deploy
-
-| Command | Description |
-|---------|-------------|
-| `deploy git setup <app>` | Create a bare git repository with post-receive hook that auto-deploys on push |
+- `deploy dev start/stop` — Dev containers with volume mounts (port + 1000)
+- `deploy scaffold` — Auto-detect stack, generate deploy.yml + Dockerfile
 
 ### Operations
+- `deploy audit` — Full audit log of every action
+- `deploy backup / restore` — Full system backup and restore
+- `deploy config set/get` — Persistent daemon settings
+- `deploy usage` — Container CPU/memory
+- `deploy ssh` — Interactive shell into running containers
+- `deploy uninstall` — Remove everything cleanly
 
-| Command | Description |
-|---------|-------------|
-| `deploy backup` | Create a full system backup (SQLite VACUUM INTO + tar archive) |
-| `deploy restore <backup-file>` | Restore from a backup (daemon must be stopped) |
-| `deploy audit [app]` | Show deploy audit log entries |
-| `deploy config get [key]` | Get daemon settings (secrets masked by default) |
-| `deploy config set key=val` | Set a daemon setting |
-| `deploy usage <app>` | Show container resource usage (CPU, memory) |
-| `deploy ssh <app>` | Open an interactive shell in the running container |
-
-### System
-
-| Command | Description |
-|---------|-------------|
-| `deploy init` | Initialize the deploy environment |
-| `deploy daemon` | Start the deploy daemon |
-| `deploy uninstall` | Remove deploy, its data, and systemd service |
-| `deploy version` | Print the version |
-
-## DNS Providers
-
-Supported DNS providers for automatic A and AAAA record management:
-
-| Provider | Auth |
-|----------|------|
-| Cloudflare | API Token (Bearer) |
-| DigitalOcean | Personal Access Token |
-| Hetzner | Cloud API Token |
-| Linode | Personal Access Token |
-| Vultr | API Key |
-| Porkbun | API Key + Secret Key |
-
-Route53 support is planned for a future release.
-
-Configure the provider via daemon settings:
-
-```bash
-deploy config set dns_provider cloudflare
-deploy config set dns_token <api-token>
-```
-
-Then sync DNS records for an app:
-
-```bash
-deploy domain dns sync myapp --ipv4 203.0.113.10
-```
+### CI/CD
+- `deploy git setup` — Git post-receive hook auto-deploys on push
+- Works with GitHub Actions, GitLab CI, any SSH-able CI
+- All commands return structured JSON with `--json`
 
 ## Architecture
 
 ```
 +-------------------+      Unix Socket       +-------------------+
 |  deploy CLI       | <--------------------> |  deploy daemon    |
-|  (cobra commands) |      /var/run/         |  (HTTP API)       |
+|  (cobra commands) |   /var/run/deploy/     |  (HTTP API)       |
 +-------------------+      deploy.sock       +-------------------+
                                                     |
-                      +-----------------------------+------------------+
-                      |              |              |                  |
-                 +---------+   +---------+   +-----------+   +--------------+
-                 | SQLite  |   | Docker  |   | Caddy     |   | Tarball      |
-                 | State   |   | Runtime |   | Subprocess|   | Storage      |
-                 +---------+   +---------+   +-----------+   +--------------+
+                      +------------------------------+------------------+
+                      |              |               |                  |
+                 +---------+    +---------+    +-----------+    +--------------+
+                 | SQLite  |    | Docker  |    | Caddy     |    | Tarball      |
+                 | State   |    | Runtime |    | Subprocess|    | Storage      |
+                 +---------+    +---------+    +-----------+    +--------------+
 ```
 
-- **CLI** sends commands to the daemon over a Unix socket (0700 permissions)
-- **Daemon** manages state in SQLite (WAL mode, busy_timeout 5s), runs Docker containers, and manages a Caddy subprocess for reverse proxy and SSL
-- **Promote** flow: build image, save tarball for rollback, start new container on port+1, health check, update Caddy config, stop old container
-- **Secrets** are encrypted with AES-256-GCM using a master key stored at `~/.deploy/master.key` (0600)
-- **Images** are stored as tarballs in `~/.deploy/images/` (last 5 kept per app)
+- **CLI** → daemon over Unix socket at `/var/run/deploy/deploy.sock` (0770, deploy group)
+- **Daemon** manages state in SQLite (WAL mode), runs Docker containers, manages Caddy subprocess
+- **Promote flow**: build → save tarball → allocate free port → create container → health check → update Caddy → stop old container
+- **Secrets** encrypted with AES-256-GCM, master key at `~/.deploy/master.key` (0600)
+- **Images** stored as tarballs in `~/.deploy/images/` (last 5 per app)
 
-## Security
+## Comparison
 
-- All sensitive values (`dns_token`, `dns_secret`) are encrypted with AES-256-GCM before storage
-- Master key stored at `~/.deploy/master.key` with 0600 permissions
-- SQLite database at 0600 permissions
-- Unix socket at 0700 permissions (accessible only by owner)
-- Container stop uses SIGTERM with 30-second grace period before SIGKILL
-- Encrypted secrets are decrypted only at runtime when passed as environment variables to containers
+| | deploy | Dokku | Coolify | Railway |
+|---|---|---|---|---|
+| Install size | 21MB binary | apt/pkg 50MB+ | Docker stack ~800MB | N/A (managed) |
+| Dependencies | Docker only | Docker | Docker + Postgres + Redis | N/A |
+| CLI | Native Go | Shell scripts | Web UI only | Web UI + CLI |
+| CI/CD friendly | ✅ | ⚠️ | ❌ | ⚠️ |
+| Secrets mgmt | Built-in AES-256 | Plugin | ❌ | Platform |
+| Audit logs | Built-in | ❌ | ❌ | ❌ |
+| DNS providers | 6 providers | Plugin | ✅ | ❌ |
+| MCP server | Planned | ❌ | ❌ | ❌ |
+| Zero-downtime | ✅ | Plugin | ⚠️ | ✅ |
+| Price | Free (self-host) | Free | Free (self-host) | Usage-based |
 
 ## Requirements
 
@@ -276,8 +130,21 @@ deploy domain dns sync myapp --ipv4 203.0.113.10
 - Docker Engine (20.0+)
 - Go 1.26+ (only for building from source)
 
-Optional:
-- Caddy v2.8+ (auto-downloaded by `deploy init`, for reverse proxy and SSL)
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for the full plan.
+
+✅ **v0.3.0 — Solo dev experience**: released. Critical bugs fixed (permission model, promote flow, tar build context, health check, config UX), DNS zone extraction for 6 providers, interactive init wizard, scaffold command, graceful shutdown.
+
+## Design Decisions
+
+| Decision | Choice |
+|----------|--------|
+| Socket location | `/var/run/deploy/deploy.sock` (0770, deploy group) |
+| Database | SQLite default, optional PostgreSQL for teams |
+| Config format | deploy.yml = production, docker-compose.yml = local dev |
+| Main CLI command | `deploy up` (not `deploy promote`) |
+| Rollback strategy | Tarballs default, tag-based optional |
 
 ## License
 

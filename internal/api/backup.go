@@ -12,18 +12,19 @@ import (
 	"time"
 
 	"deploy/internal/config"
+	"deploy/internal/types"
 )
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	backupDir := filepath.Join(config.DeployDirPath(), "backups")
 	if err := os.MkdirAll(backupDir, 0700); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "mkdir: "+err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("mkdir: %w", err)}))
 		return
 	}
 
 	tmpDir, err := os.MkdirTemp(backupDir, ".backup-")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "mktemp: "+err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("mktemp: %w", err)}))
 		return
 	}
 	defer os.RemoveAll(tmpDir)
@@ -31,20 +32,20 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	// SQLite VACUUM INTO requires a string literal at parse time (not a bound parameter).
 	dbPath := filepath.Join(tmpDir, "deploy.db")
 	if _, err := s.db.Exec("VACUUM INTO '" + strings.ReplaceAll(dbPath, "'", "''") + "'"); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "VACUUM INTO: "+err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("VACUUM INTO: %w", err)}))
 		return
 	}
 
 	// Copy other important files.
 	if err := copyFile(filepath.Join(config.DeployDirPath(), "master.key"), filepath.Join(tmpDir, "master.key")); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "copy master.key: "+err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("copy master.key: %w", err)}))
 		return
 	}
 
 	auditLog := filepath.Join(config.DeployDirPath(), "audit.log")
 	if _, err := os.Stat(auditLog); err == nil {
 		if err := copyFile(auditLog, filepath.Join(tmpDir, "audit.log")); err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "copy audit.log: "+err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("copy audit.log: %w", err)}))
 			return
 		}
 	}
@@ -52,7 +53,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	imagesDir := filepath.Join(config.DeployDirPath(), "images")
 	if _, err := os.Stat(imagesDir); err == nil {
 		if err := copyDir(imagesDir, filepath.Join(tmpDir, "images")); err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "copy images: "+err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("copy images: %w", err)}))
 			return
 		}
 	}
@@ -60,14 +61,14 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	caddyDir := filepath.Join(config.DeployDirPath(), "caddy")
 	if _, err := os.Stat(caddyDir); err == nil {
 		if err := copyDir(caddyDir, filepath.Join(tmpDir, "caddy")); err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "copy caddy: "+err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("copy caddy: %w", err)}))
 			return
 		}
 	}
 
 	outputPath := filepath.Join(backupDir, fmt.Sprintf("deploy-%s.tar.gz", time.Now().Format("20060102-150405")))
 	if err := tarDir(tmpDir, outputPath); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody("BACKUP_FAILED", "tar: "+err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Err: fmt.Errorf("tar: %w", err)}))
 		return
 	}
 

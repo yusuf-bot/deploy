@@ -16,13 +16,13 @@ var restartCmd = &cobra.Command{
 		c := newClient()
 
 		// Stop (wait for completion)
-		stopResp, err := c.StopApp(name, true, false)
+		stopResp, err := c.StopApp(name, false)
 		if err != nil {
 			return fmt.Errorf("restart: stop %q: %w", name, err)
 		}
 
 		// Start (wait for completion)
-		startResp, err := c.StartApp(name, true, false)
+		startResp, err := c.StartApp(name, false)
 		if err != nil {
 			return fmt.Errorf("restart: start %q failed — app %q is STOPPED: %w", name, name, err)
 		}

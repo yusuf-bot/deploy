@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	DefaultSocketDir  = "/var/run"
+	DefaultSocketDir  = "/var/run/deploy"
 	DefaultSocketName = "deploy.sock"
 	DefaultDBName     = "deploy.db"
 	DefaultConfigName = "deploy.yaml"
 	DeployDir         = ".deploy"
-	Version           = "0.1.0"
+	Version           = "0.2.0"
 )
 
 // Config holds the deploy daemon configuration.
@@ -48,25 +48,18 @@ func HomeDir() string {
 	return usr.HomeDir
 }
 
-// DeployDir returns the path to ~/.deploy/.
+// DeployDir returns the path to the deploy data directory.
+// Uses DEPLOY_HOME env var if set, otherwise ~/.deploy/.
 func DeployDirPath() string {
+	if d := os.Getenv("DEPLOY_HOME"); d != "" {
+		return d
+	}
 	return filepath.Join(HomeDir(), DeployDir)
 }
 
-// SocketPath returns the appropriate socket path based on privileges.
+// SocketPath returns the path to the deploy daemon socket.
 func SocketPath() string {
-	// Root: /var/run/deploy.sock
-	if os.Geteuid() == 0 {
-		return filepath.Join(DefaultSocketDir, DefaultSocketName)
-	}
-
-	// Non-root: $XDG_RUNTIME_DIR/deploy/deploy.sock
-	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return filepath.Join(xdg, "deploy", DefaultSocketName)
-	}
-
-	// Fallback: ~/.local/share/deploy/deploy.sock
-	return filepath.Join(HomeDir(), ".local", "share", "deploy", DefaultSocketName)
+	return filepath.Join(DefaultSocketDir, DefaultSocketName)
 }
 
 // DBPath returns the path to the SQLite database.
@@ -89,13 +82,9 @@ func InitDir() error {
 }
 
 // InitSocketDir creates the parent directory for the socket if needed.
+// InitSocketDir creates /var/run/deploy with 0770 perms.
 func InitSocketDir() error {
-	socketPath := SocketPath()
-	dir := filepath.Dir(socketPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("create socket dir: %w", err)
-	}
-	return nil
+	return os.MkdirAll(DefaultSocketDir, 0770)
 }
 
 // ValidateName checks that an app name matches ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$

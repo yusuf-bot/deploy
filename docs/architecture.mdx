@@ -1,0 +1,56 @@
+---
+title: Architecture
+description: How deploy works under the hood.
+---
+
+# Architecture
+
+## Overview
+
+```
++-------------------+      Unix Socket       +-------------------+
+|  deploy CLI       | <--------------------> |  deploy daemon    |
+|  (cobra commands) |   /var/run/deploy/     |  (HTTP API)       |
++-------------------+      deploy.sock       +-------------------+
+                                                    |
+                      +------------------------------+------------------+
+                      |              |               |                  |
+                 +---------+    +---------+    +-----------+    +--------------+
+                 | SQLite  |    | Docker  |    | Caddy     |    | Tarball      |
+                 | State   |    | Runtime |    | Subprocess|    | Storage      |
+                 +---------+    +---------+    +-----------+    +--------------+
+```
+
+## Components
+
+### CLI
+Go binary with cobra commands. Connects to daemon over Unix socket. All commands support --json for structured output.
+
+### Daemon
+HTTP API server on Unix socket. Manages SQLite state, Docker containers, Caddy subprocess. Handles async jobs (deploy, rollback, start, stop).
+
+### SQLite State
+Single file database in WAL mode. Stores apps, deployments, domains, secrets, settings, port allocations, jobs. busy_timeout=5000 for concurrent access.
+
+### Docker Runner
+Creates and manages containers. Labels them with deploy.app.name for state reconciliation.
+
+### Caddy Subprocess
+Managed Caddy instance. Template-based config generation. SIGHUP reloads on config changes. Automatic Let's Encrypt SSL.
+
+### Tarball Storage
+Docker image tarballs saved to ~/.deploy/images/. Last 5 kept per app. Survives docker system prune.
+
+## Promote Flow
+
+1. **Build** -- Docker build with build args, .dockerignore, multi-stage
+2. **Save** -- Save image as tarball for rollback
+3. **Allocate port** -- Find free port from pool
+4. **Create** -- Start new container on allocated port
+5. **Health check** -- HTTP health check with configurable retries
+6. **Update Caddy** -- Point domains to new container port
+7. **Stop old** -- Zero-downtime swap, stop old container
+8. **Cleanup** -- Remove old tarballs, update state
+
+## Secrets
+AES-256-GCM encrypted master key. Secrets decrypted at runtime, never stored in plaintext.

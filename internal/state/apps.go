@@ -164,7 +164,7 @@ func DeleteApp(db *sql.DB, name string) error {
 }
 
 // UpdateAppStatus updates the status of an app.
-func UpdateAppStatus(db *sql.DB, name string, status string) error {
+func UpdateAppStatus(db Execer, name string, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
 		`UPDATE apps SET status = ?, updated_at = ? WHERE name = ?`,
@@ -213,4 +213,22 @@ func UpdateAppPort(db Execer, name string, port int) error {
 		return fmt.Errorf("update app port: %w", err)
 	}
 	return nil
+}
+
+// ListAssignedPorts returns all currently assigned ports from the apps table.
+func ListAssignedPorts(db *sql.DB) ([]int, error) {
+	rows, err := db.Query("SELECT port FROM apps")
+	if err != nil {
+		return nil, fmt.Errorf("list assigned ports: %w", err)
+	}
+	defer rows.Close()
+	var ports []int
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scan port: %w", err)
+		}
+		ports = append(ports, p)
+	}
+	return ports, rows.Err()
 }

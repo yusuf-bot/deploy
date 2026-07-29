@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -25,6 +26,7 @@ func EnsureMasterKey(keyDir string) ([]byte, error) {
 	if data, err := os.ReadFile(path); err == nil && len(data) == KeySize {
 		return data, nil
 	}
+	log.Printf("warning: master key file has wrong size, generating new key")
 	key, err := GenerateMasterKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate master key: %w", err)

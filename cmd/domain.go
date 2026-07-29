@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"net"
 	"fmt"
 	"os"
 	"strings"
@@ -142,7 +143,16 @@ Creates A records (--ipv4) and AAAA records (--ipv6) pointing to your server.`,
 		ipv4, _ := cmd.Flags().GetString("ipv4")
 		ipv6, _ := cmd.Flags().GetString("ipv6")
 		if ipv4 == "" && ipv6 == "" {
-			return fmt.Errorf("at least one of --ipv4 or --ipv6 required")
+			// Auto-detect IPv4
+			detected, err := detectPublicIP()
+			if err == nil && detected != "" {
+				ipv4 = detected
+				fmt.Printf("auto-detected public IPv4: %s\n", ipv4)
+			}
+		}
+
+		if ipv4 == "" && ipv6 == "" {
+			return fmt.Errorf("could not detect public IP and no --ipv4 or --ipv6 provided")
 		}
 		resp, err := c.DNSSync(args[0], ipv4, ipv6)
 		if err != nil {
@@ -201,6 +211,34 @@ var domainDNSListCmd = &cobra.Command{
 		return nil
 	},
 }
+
+func detectPublicIP() (string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
+			}
+			ipv4 := ipnet.IP.To4()
+			if ipv4 != nil {
+				return ipv4.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no public IPv4 address found")
+}
+
 
 func init() {
 	domainCmd.AddCommand(domainAddCmd)

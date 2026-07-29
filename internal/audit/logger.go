@@ -14,13 +14,27 @@ import (
 
 // Entry represents a single audit log entry.
 type Entry struct {
-	Time       time.Time `json:"time"`
-	Action     string    `json:"action"`
-	App        string    `json:"app"`
-	Version    string    `json:"version,omitempty"`
-	InitiatedBy string   `json:"by"`
-	DurationMs int64     `json:"duration_ms"`
-	Result     string    `json:"result"`
+	Time        time.Time `json:"time"`
+	Action      string    `json:"action"`
+	App         string    `json:"app"`
+	Version     string    `json:"version,omitempty"`
+	InitiatedBy string    `json:"by"`
+	DurationMs  int64     `json:"duration_ms"`
+	Result      string    `json:"result"`
+}
+
+// CurrentUser returns the username of the current process.
+func CurrentUser() string {
+	if u := os.Getenv("DEPLOY_USER"); u != "" {
+		return u
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u := os.Getenv("LOGNAME"); u != "" {
+		return u
+	}
+	return "unknown"
 }
 
 // auditLogPath returns the path to the audit log file.

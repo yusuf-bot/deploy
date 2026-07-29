@@ -56,7 +56,10 @@ var createCmd = &cobra.Command{
 		}
 
 		if isJSONFlag(cmd) {
-			data, _ := json.MarshalIndent(app, "", "  ")
+			data, err := json.MarshalIndent(app, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
 			fmt.Println(string(data))
 		} else {
 			fmt.Printf("App %q created (id: %s)\n", app.Name, app.ID[:8])

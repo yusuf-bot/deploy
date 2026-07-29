@@ -124,7 +124,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		svcPort = cfg.Ports[0].Container
 	}
 
-	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort, targetVersion)
+	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort, targetVersion, cfg.Resources)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))
@@ -133,7 +133,9 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 
 	// Start the container
 	if err := d.runner.StartContainer(ctx, containerID); err != nil {
-		d.runner.RemoveContainer(ctx, containerID)
+		if err := d.runner.RemoveContainer(ctx, containerID); err != nil {
+			log.Printf("warning: remove container %s: %v", containerID[:12], err)
+		}
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("start container: %v", err))
 		return nil, fmt.Errorf("start container: %w", err)
@@ -170,7 +172,9 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	log.Printf("health checking rollback container %s on port %d...", containerID[:12], hostPort)
 	if err := d.runner.HealthCheck(ctx, containerID, hostPort, healthPath, initialDelay, interval, timeout, retries); err != nil {
 		d.runner.StopContainer(ctx, containerID)
-		d.runner.RemoveContainer(ctx, containerID)
+		if err := d.runner.RemoveContainer(ctx, containerID); err != nil {
+			log.Printf("warning: remove container %s: %v", containerID[:12], err)
+		}
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("health check: %v", err))
 
@@ -191,6 +195,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 			Version:    auditVersion,
 			DurationMs: time.Since(startTime).Milliseconds(),
 			Result:     fmt.Sprintf("health check: %v", err),
+			InitiatedBy: audit.CurrentUser(),
 		})
 		return nil, fmt.Errorf("health check: %w", err)
 	}
@@ -225,6 +230,9 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
 	}
+	if err := state.UpdateAppStatus(tx, appName, types.StatusRunning); err != nil {
+		return nil, fmt.Errorf("update app status: %w", err)
+	}
 	dep.CreatedAt = time.Now().UTC()
 	if err := state.UpdateDeploymentStatus(tx, depID, types.DeployStatusActive, ""); err != nil {
 		return nil, fmt.Errorf("update deployment status: %w", err)
@@ -240,6 +248,11 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
+	// Update port allocation
+	if err := state.UpdatePortAllocation(d.db, appName, hostPort); err != nil {
+		log.Printf("warning: update port allocation: %v", err)
+	}
+
 	log.Printf("rolled back %s to %s (container=%s, port=%d)", appName, targetVersion, containerID[:12], hostPort)
 	audit.Log(audit.Entry{
 		Time:       time.Now().UTC(),
@@ -248,6 +261,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		Version:    targetVersion,
 		DurationMs: time.Since(startTime).Milliseconds(),
 		Result:     "ok",
+			InitiatedBy: audit.CurrentUser(),
 	})
 	// Clean up old tarballs (non-fatal)
 	if err := build.CleanOldTarballs(appName, 5); err != nil {

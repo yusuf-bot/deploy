@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"deploy/internal/types"
 )
 
 // loggingMiddleware logs each request with method, path, duration, and status.
@@ -35,7 +37,7 @@ func panicRecoveryMiddleware(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				log.Printf("PANIC: %v\n%s", rec, debug.Stack())
 				writeError(w, http.StatusInternalServerError, ErrorBody(
-					"INTERNAL_ERROR", "internal server error",
+					&types.SystemError{Code: types.ErrInternal, Message: "internal server error"},
 				))
 			}
 		}()

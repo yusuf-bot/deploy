@@ -1,9 +1,15 @@
 package cmd
 
 import (
-	"fmt"
 	"context"
+	"fmt"
+	"database/sql"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"os/user"
+	"syscall"
 	"time"
 
 	"deploy/internal/api"
@@ -22,7 +28,6 @@ import (
 var daemonCmd = &cobra.Command{
 	Use:    "daemon",
 	Short:  "Start the deploy daemon (for systemd or direct use)",
-	Hidden: true,
 	Args:   cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDaemon()
@@ -30,13 +35,22 @@ var daemonCmd = &cobra.Command{
 }
 
 func runDaemon() error {
+	// If running as root via sudo, switch to the real user's home
+	if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			usr, err := user.Lookup(sudoUser)
+			if err == nil {
+				os.Setenv("DEPLOY_HOME", usr.HomeDir+"/.deploy")
+			}
+		}
+	}
+
 	// Initialize directories
 	if err := config.InitDir(); err != nil {
 		return fmt.Errorf("init dir: %w", err)
 	}
-	if err := config.InitSocketDir(); err != nil {
-		return fmt.Errorf("init socket dir: %w", err)
-	}
+	// Socket is now at /var/run/deploy/deploy.sock
+	// Created by the daemon's ListenAndServe via os.MkdirAll
 
 	// Load or generate master key for secret encryption
 	masterKey, err := state.EnsureMasterKey(config.DeployDirPath())
@@ -56,11 +70,6 @@ func runDaemon() error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	// Reset all running apps to unknown (no startup reconciliation)
-	if err := state.SetAllRunningToUnknown(db); err != nil {
-		return fmt.Errorf("reset running apps: %w", err)
-	}
-
 	// Create Docker runner
 	dockerRunner, err := runner.NewDockerRunner()
 	if err != nil {
@@ -68,7 +77,7 @@ func runDaemon() error {
 	}
 
 	// Create Docker SDK client for low-level operations
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv)
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("create docker client: %w", err)
 	}
@@ -102,58 +111,93 @@ func runDaemon() error {
 		}
 	}()
 
-	// Create API server with deployer and caddy manager
-	// Auto-start apps if configured
-	if v, _ := state.GetSetting(db, "auto_start"); v == "true" {
-		apps, err := state.ListApps(db, types.StatusUnknown)
-		if err == nil {
-			for _, app := range apps {
-				log.Printf("auto-starting app %q...", app.Name)
-				ctx := context.Background()
+	// Reconcile app state with Docker containers
+	if err := reconcileAppState(db, dockerRunner); err != nil {
+		return fmt.Errorf("reconcile app state: %w", err)
+	}
 
-				// Check if container already exists for this app label
-				existingID, _ := dockerRunner.FindContainerByLabel(ctx, "deploy.app.name", app.Name)
-				if existingID != "" {
-					if err := state.UpdateAppContainer(db, app.Name, existingID); err != nil {
-						log.Printf("auto-start %s: update container ID: %v", app.Name, err)
-						continue
-					}
-					if err := state.UpdateAppStatus(db, app.Name, types.StatusRunning); err != nil {
-						log.Printf("auto-start %s: update status: %v", app.Name, err)
-						continue
-					}
-					log.Printf("auto-started %q (container=%s)", app.Name, containerShortID(existingID))
-					continue
-				}
-
-				ver := fmt.Sprintf("auto-%d", time.Now().Unix())
-				containerID, err := dockerRunner.CreateContainer(ctx, &app, ver)
-				if err != nil {
-					log.Printf("auto-start %q: create container: %v", app.Name, err)
-					continue
-				}
-				if err := dockerRunner.StartContainer(ctx, containerID); err != nil {
-					dockerRunner.RemoveContainer(ctx, containerID)
-					log.Printf("auto-start %q: start container: %v", app.Name, err)
-					continue
-				}
-				if err := state.UpdateAppContainer(db, app.Name, containerID); err != nil {
-					log.Printf("auto-start %s: update container ID: %v", app.Name, err)
-					continue
-				}
-				if err := state.UpdateAppStatus(db, app.Name, types.StatusRunning); err != nil {
-					log.Printf("auto-start %s: update status: %v", app.Name, err)
-					continue
-				}
-				log.Printf("auto-started %q (container=%s)", app.Name, containerShortID(containerID))
+	// Auto-start apps that should be running
+	v, err := state.GetSetting(db, "auto_start")
+	if err != nil {
+		log.Printf("warning: get auto_start setting: %v", err)
+	}
+	if v == "true" {
+		reconciledApps, _ := state.ListApps(db, "")
+		ctx := context.Background()
+		for _, app := range reconciledApps {
+			if app.Status != types.StatusCreated && app.Status != types.StatusRunning {
+				continue
 			}
+			if app.ContainerID != "" {
+				continue
+			}
+			log.Printf("auto-starting app %q...", app.Name)
+
+			ver := fmt.Sprintf("auto-%d", time.Now().Unix())
+			containerID, err := dockerRunner.CreateContainer(ctx, &app, ver)
+			if err != nil {
+				log.Printf("auto-start %q: create container: %v", app.Name, err)
+				continue
+			}
+			if err := dockerRunner.StartContainer(ctx, containerID); err != nil {
+				dockerRunner.RemoveContainer(ctx, containerID)
+				log.Printf("auto-start %q: start container: %v", app.Name, err)
+				continue
+			}
+			if err := state.UpdateAppContainer(db, app.Name, containerID); err != nil {
+				log.Printf("auto-start %s: update container ID: %v", app.Name, err)
+				continue
+			}
+			if err := state.UpdateAppStatus(db, app.Name, types.StatusRunning); err != nil {
+				log.Printf("auto-start %s: update status: %v", app.Name, err)
+				continue
+			}
+			log.Printf("auto-started %q (container=%s)", app.Name, containerShortID(containerID))
 		}
 	}
 
 	server := api.NewServer(db, dockerRunner, sched, deployer, cm, config.SocketPath(), masterKey)
 
-	log.Printf("Deploy daemon v%s starting", config.Version)
-	return server.ListenAndServe()
+	// Channel to receive server errors
+	errCh := make(chan error, 1)
+
+	go func() {
+		log.Printf("Deploy daemon v%s starting", config.Version)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	// Wait for shutdown signal or server error
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	var sig os.Signal
+	select {
+	case sig = <-quit:
+		log.Printf("received signal %v, shutting down...", sig)
+	case err := <-errCh:
+		return err
+	}
+
+	// Graceful shutdown: drain in-flight requests
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("shutdown error: %v", err)
+	}
+
+	// Stop Caddy
+	if cm.IsRunning() {
+		if err := cm.Stop(); err != nil {
+			log.Printf("caddy stop error: %v", err)
+		}
+	}
+
+	// sched.Stop() and db.Close() handled by defer
+	log.Println("deploy daemon stopped gracefully")
+	return nil
 }
 
 
@@ -162,6 +206,44 @@ func containerShortID(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+
+// reconcileAppState checks each app's container status in Docker and updates
+// the database to match. Apps with running containers stay running, apps
+// without containers get marked as stopped.
+func reconcileAppState(db *sql.DB, runner runner.Interface) error {
+	apps, err := state.ListApps(db, "")
+	if err != nil {
+		return fmt.Errorf("list apps: %w", err)
+	}
+
+	for _, app := range apps {
+		containerID, err := runner.FindContainerByLabel(context.Background(), "deploy.app.name", app.Name)
+		if err == nil && containerID != "" {
+			// Container exists — set status to running and update container ID
+			if app.Status != types.StatusRunning {
+				if err := state.UpdateAppStatus(db, app.Name, types.StatusRunning); err != nil {
+					log.Printf("reconcile %s: update status: %v", app.Name, err)
+				}
+			}
+			if app.ContainerID != containerID {
+				if err := state.UpdateAppContainer(db, app.Name, containerID); err != nil {
+					log.Printf("reconcile %s: update container ID: %v", app.Name, err)
+				}
+			}
+			continue
+		}
+
+		// Container doesn't exist in Docker
+		if app.Status == types.StatusRunning {
+			log.Printf("app %s was running but container is gone, marking as stopped", app.Name)
+			if err := state.UpdateAppStatus(db, app.Name, types.StatusStopped); err != nil {
+				log.Printf("reconcile %s: update status: %v", app.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 func init() {

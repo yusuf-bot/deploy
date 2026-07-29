@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"sync"
+	"bytes"
 	"syscall"
 	"time"
 
@@ -203,15 +205,22 @@ func (m *CaddyManager) startProcess() error {
 	m.exitedCh = exitedCh
 
 	// 6. Verify process started (brief wait + check)
-	time.Sleep(100 * time.Millisecond)
-	if !isProcessAlive(cmd.Process.Pid) {
+	// Verify process started (goroutine + channel)
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitCh:
 		m.running = false
 		m.cancel = nil
 		m.cmd = nil
 		m.exitedCh = nil
 		cancel()
 		close(exitedCh)
-		return fmt.Errorf("caddy process exited immediately")
+		return fmt.Errorf("caddy exited immediately: %w", err)
+	case <-time.After(100 * time.Millisecond):
+		// Still alive
 	}
 
 	// 7. Launch crash watcher goroutine
@@ -271,41 +280,40 @@ func (m *CaddyManager) restartWithBackoff() {
 	myAttempt := m.restartAttempts
 	m.mu.Unlock()
 
-	for i := 0; i < maxAttempts; i++ {
-		// Check if stop was requested before sleeping
-		select {
-		case <-m.stopCh:
-			log.Printf("caddy restart cancelled (shutting down)")
-			return
-		default:
+	// Check if stop was requested before sleeping
+	select {
+	case <-m.stopCh:
+		log.Printf("caddy restart cancelled (shutting down)")
+		return
+	default:
+	}
+
+	time.Sleep(backoff)
+
+	// Check again after sleeping
+	select {
+	case <-m.stopCh:
+		log.Printf("caddy restart cancelled (shutting down)")
+		return
+	default:
+	}
+
+	m.mu.Lock()
+	err := m.startProcess()
+	m.mu.Unlock()
+
+	if err != nil {
+		log.Printf("caddy restart attempt %d/%d failed: %v", myAttempt, maxAttempts, err)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
-
-		time.Sleep(backoff)
-
-		// Check again after sleeping
-		select {
-		case <-m.stopCh:
-			log.Printf("caddy restart cancelled (shutting down)")
-			return
-		default:
-		}
-
-		m.mu.Lock()
-		err := m.startProcess()
-		m.mu.Unlock()
-
-		if err != nil {
-			log.Printf("caddy restart attempt %d/%d failed: %v", myAttempt, maxAttempts, err)
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
-		}
-
-		log.Printf("caddy restarted successfully (attempt %d/%d)", myAttempt, maxAttempts)
+		log.Printf("caddy failed to restart after %d attempts, giving up", maxAttempts)
 		return
 	}
+
+	log.Printf("caddy restarted successfully (attempt %d/%d)", myAttempt, maxAttempts)
+	return
 
 	log.Printf("caddy failed to restart after %d attempts, giving up", maxAttempts)
 }
@@ -433,7 +441,7 @@ func (m *CaddyManager) AddDomainSnippet(appName string, domain string, port int)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	snippet := SiteBlock(domain, port)
+	snippet := generateAppSnippet(appName, port, []string{domain})
 	filename := SiteFilename(appName, domain)
 	path := filepath.Join(m.sitesDir(), filename)
 
@@ -519,9 +527,9 @@ func (m *CaddyManager) removeOrphanedSnippet(domain string) error {
 	return nil
 }
 
-// UpdatePortSnippets finds all site files for the given app and updates the
-// port in the reverse_proxy directive. Used when promote/rollback changes the
-// app port.
+// UpdatePortSnippets updates the port in all site snippets for the given app.
+// Uses generateAppSnippet to regenerate each snippet atomically instead of
+// string replacement, which could corrupt content.
 func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -534,30 +542,22 @@ func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int
 		return fmt.Errorf("app not found: %s", appID)
 	}
 
-	// Find all snippet files for this app by scanning the sites directory
-	entries, err := os.ReadDir(m.sitesDir())
+	// Get all domains for this app from the DB
+	domains, err := state.ListDomainsByApp(m.db, app.ID)
 	if err != nil {
-		return fmt.Errorf("read sites dir: %w", err)
+		return fmt.Errorf("list domains for app %s: %w", app.Name, err)
 	}
 
-	prefix := fmt.Sprintf("%s-", app.Name)
-	oldStr := fmt.Sprintf("localhost:%d", oldPort)
-	newStr := fmt.Sprintf("localhost:%d", newPort)
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") || !strings.HasPrefix(entry.Name(), prefix) {
-			continue
+	// Regenerate each domain snippet with the new port
+	for _, d := range domains {
+		snippet := generateAppSnippet(app.Name, newPort, []string{d.Domain})
+		filename := SiteFilename(app.Name, d.Domain)
+		path := filepath.Join(m.sitesDir(), filename)
+		if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
+			return fmt.Errorf("create sites dir: %w", err)
 		}
-
-		path := filepath.Join(m.sitesDir(), entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read snippet %s: %w", entry.Name(), err)
-		}
-
-		updated := strings.ReplaceAll(string(data), oldStr, newStr)
-		if err := os.WriteFile(path, []byte(updated), 0600); err != nil {
-			return fmt.Errorf("write updated snippet %s: %w", entry.Name(), err)
+		if err := os.WriteFile(path, []byte(snippet), 0600); err != nil {
+			return fmt.Errorf("write snippet %s: %w", filename, err)
 		}
 	}
 
@@ -567,7 +567,7 @@ func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int
 
 	return nil
 }
-
+// generateSnippets writes snippet files for all running apps with domains.
 // generateSnippets writes snippet files for all running apps with domains.
 // Old snippet files not in the current DB state are cleaned up.
 func (m *CaddyManager) generateSnippets() error {
@@ -590,7 +590,7 @@ func (m *CaddyManager) generateSnippets() error {
 			expected[filename] = true
 
 			path := filepath.Join(m.sitesDir(), filename)
-			snippet := SiteBlock(d.Domain, app.Port)
+			snippet := generateAppSnippet(app.Name, app.Port, []string{d.Domain})
 			if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
 				return fmt.Errorf("create sites dir: %w", err)
 			}
@@ -632,4 +632,27 @@ func isProcessAlive(pid int) bool {
 	}
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+// appSnippetTemplate is the Go template for generating a Caddyfile snippet
+// for an app with multiple domains.
+const appSnippetTemplate = `# deploy: {{.AppName}}
+{{range .Domains}}{{.}} {
+    reverse_proxy localhost:{{.Port}}
+}
+{{end}}`
+
+type appSnippetData struct {
+	AppName string
+	Port    int
+	Domains []string
+}
+
+// generateAppSnippet generates a Caddyfile site snippet for an app's domains
+// using a proper Go template. Replaces the old strings.ReplaceAll approach
+// which could corrupt content.
+func generateAppSnippet(appName string, port int, domains []string) string {
+	tmpl := template.Must(template.New("app").Parse(appSnippetTemplate))
+	var buf bytes.Buffer
+	tmpl.Execute(&buf, appSnippetData{AppName: appName, Port: port, Domains: domains})
+	return buf.String()
 }

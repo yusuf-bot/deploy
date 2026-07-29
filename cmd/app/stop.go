@@ -19,7 +19,7 @@ var stopCmd = &cobra.Command{
 		async := isAsyncFlag(cmd)
 
 		c := client.New(config.SocketPath())
-		resp, err := c.StopApp(name, !async, async)
+		resp, err := c.StopApp(name, async)
 		if err != nil {
 			return fmt.Errorf("stop app: %w", err)
 		}

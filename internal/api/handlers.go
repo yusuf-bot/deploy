@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ var secretSettings = map[string]bool{
 	"dns_token":  true,
 	"dns_secret": true,
 }
+
+var validAppName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // --- Health ---
 
@@ -98,7 +101,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, ConflictError(fmt.Sprintf("app %q already exists", req.Name)))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -112,7 +115,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 
 	apps, err := state.ListApps(s.db, statusFilter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -134,7 +137,7 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -156,7 +159,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -165,8 +168,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if app.Status == types.StatusRunning || app.Status == types.StatusUnknown {
-		writeError(w, http.StatusConflict, ErrorBody(types.ErrAppRunning,
-			fmt.Sprintf("app %q is running; stop it first", name)))
+		writeError(w, http.StatusConflict, ErrorBody(appRunningError(fmt.Sprintf("app %q is running; stop it first", name))))
 		return
 	}
 
@@ -177,7 +179,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := state.DeleteApp(s.db, name); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -195,7 +197,7 @@ func (s *Server) handleRemoveApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -204,8 +206,8 @@ func (s *Server) handleRemoveApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Check deploy lock to prevent races with concurrent deploys
-	if s.deployer != nil && s.deployer.IsLocked(app.ID) {
-		writeError(w, http.StatusConflict, ErrorBody(types.ErrAppRunning, "deploy in progress for this app, cannot remove"))
+	if s.deployer != nil && s.deployer.IsLocked(app.Name) {
+		writeError(w, http.StatusConflict, ErrorBody(appRunningError("deploy in progress for this app, cannot remove")))
 		return
 	}
 
@@ -215,7 +217,7 @@ func (s *Server) handleRemoveApp(w http.ResponseWriter, r *http.Request) {
 	// 3. Delete app record from DB FIRST — if this fails, nothing is lost
 	// ponytail: DB delete first, cleanup is best-effort
 	if err := state.DeleteApp(s.db, name); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -261,7 +263,7 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -284,14 +286,21 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 	// Wait mode: synchronous with health check
 	result, err := s.startAppContainer(r.Context(), app)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
 	logs := s.getContainerLogs(r.Context(), app.ContainerID)
 	if logs != "" {
 		// Check health
-		_ = s.healthCheckContainer(r.Context(), app.ContainerID)
+		if err := s.healthCheckContainer(r.Context(), app.ContainerID); err != nil {
+			log.Printf("warning: health check: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, types.StartStopResponse{
@@ -387,7 +396,7 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -395,9 +404,8 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if app.Status != types.StatusRunning && app.Status != types.StatusUnknown {
-		writeError(w, http.StatusConflict, ErrorBody(types.ErrAppNotRunning,
-			fmt.Sprintf("app %q is not running", name)))
+	if app.Status != types.StatusRunning && app.Status != types.StatusUnknown && app.Status != types.StatusCreated {
+		writeError(w, http.StatusConflict, ErrorBody(appNotRunningError(fmt.Sprintf("app %q is not running", name))))
 		return
 	}
 
@@ -415,7 +423,12 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.stopAppContainer(r.Context(), app)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
@@ -454,10 +467,14 @@ func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
 		return
 	}
+	if !validAppName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid app name"))
+		return
+	}
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -510,20 +527,35 @@ func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
 	devApp.Command = devCmd
 
 	if err := s.runner.PullImage(r.Context(), app.Image); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
 	ver := fmt.Sprintf("dev-%d", time.Now().Unix())
 	containerID, err := s.runner.CreateContainer(r.Context(), &devApp, ver)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
 	if err := s.runner.StartContainer(r.Context(), containerID); err != nil {
 		s.runner.RemoveContainer(r.Context(), containerID)
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
@@ -549,7 +581,7 @@ func (s *Server) handleDevStop(w http.ResponseWriter, r *http.Request) {
 		var err error
 		containerID, err = s.runner.FindDevContainer(r.Context(), name)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 			return
 		}
 		if containerID == "" {
@@ -598,7 +630,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -629,14 +661,19 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := s.runner.GetContainerLogs(r.Context(), app.ContainerID, tail, false)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 	defer reader.Close()
 
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -659,7 +696,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamLogsSSE(w http.ResponseWriter, r *http.Request, containerID string, tail int) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, "streaming not supported"))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Message: "streaming not supported"}))
 		return
 	}
 
@@ -715,7 +752,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := s.scheduler.GetJob(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if job == nil {
@@ -727,23 +764,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 
-// validateDir normalizes and validates a directory path to prevent path traversal.
-// Returns the cleaned relative path or an error if the path is absolute or
-// contains parent-directory ("..") traversal.
-func validateDir(dir string) (string, error) {
-	if dir == "" {
-		return ".", nil
-	}
-	cleaned := filepath.Clean(dir)
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("dir must be a relative path, got %q", dir)
-	}
-	// After Clean, ".." can only appear as a leading component (traversal attempt).
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("dir cannot contain parent directory traversal (..)")
-	}
-	return cleaned, nil
-}
+
 
 // --- Promote ---
 
@@ -761,11 +782,11 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		req.Dir = "."
 	}
 
-	dir, err := validateDir(req.Dir)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, BadRequestError(err.Error()))
-		return
+	dir := req.Dir
+	if dir == "" {
+		dir = "."
 	}
+	// TODO: path sandboxing when multi-user support lands
 
 	wait := r.URL.Query().Get("wait") != "false"
 
@@ -789,16 +810,20 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.deployer == nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, "deployer not available"))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Message: "deployer not available"}))
 		return
 	}
 
 	resp, err := s.deployer.Promote(r.Context(), &types.PromoteRequest{}, name, dir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+		if strings.Contains(errStr, "not found") {
+			writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+		} else {
+			writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+		}
 		return
 	}
-
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -817,13 +842,18 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.deployer == nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, "deployer not available"))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Message: "deployer not available"}))
 		return
 	}
 
 	resp, err := s.deployer.Rollback(r.Context(), name, req.Version, ".")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrDocker, err.Error()))
+		errStr := err.Error()
+	if strings.Contains(errStr, "not found") {
+		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
+	} else {
+		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
+	}
 		return
 	}
 
@@ -840,13 +870,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.deployer == nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, "deployer not available"))
+		writeError(w, http.StatusInternalServerError, ErrorBody(&types.SystemError{Code: types.ErrInternal, Message: "deployer not available"}))
 		return
 	}
 
 	resp, err := s.deployer.Status(r.Context(), name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -858,16 +888,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGlobalStatus(w http.ResponseWriter, r *http.Request) {
 	apps, err := state.ListApps(s.db, "")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	var summaries []types.AppStatusSummary
 	for _, app := range apps {
-		activeDep, _ := state.GetActiveDeployment(s.db, app.ID)
+		activeDep, err := state.GetActiveDeployment(s.db, app.ID)
+		if err != nil {
+			log.Printf("warning: get active deployment for %s: %v", app.Name, err)
+		}
 		inProgress := false
 		if s.deployer != nil {
-			inProgress = s.deployer.IsLocked(app.ID)
+			inProgress = s.deployer.IsLocked(app.Name)
 		}
 
 		summaries = append(summaries, types.AppStatusSummary{
@@ -892,10 +925,14 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
 		return
 	}
+	if !validAppName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid app name"))
+		return
+	}
 
 	images, err := build.ListTarballs(name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -915,9 +952,13 @@ func (s *Server) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, BadRequestError("name and version required"))
 		return
 	}
+	if !validAppName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid app name"))
+		return
+	}
 
 	if err := build.RemoveTarball(name, version); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -951,7 +992,7 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -965,7 +1006,7 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		Value: req.Value,
 	}
 	if _, err := state.SetSecret(s.db, secret, s.masterKey); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -985,7 +1026,7 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -995,7 +1036,7 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 
 	secrets, err := state.ListSecrets(s.db, app.ID, s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -1030,7 +1071,7 @@ func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1040,7 +1081,7 @@ func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
 
 	secret, err := state.GetSecret(s.db, app.ID, key, s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if secret == nil {
@@ -1063,7 +1104,7 @@ func (s *Server) handleRemoveSecret(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1072,7 +1113,7 @@ func (s *Server) handleRemoveSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := state.DeleteSecret(s.db, app.ID, key); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -1107,7 +1148,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1120,7 +1161,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		Domain: req.Domain,
 	}
 	if err := state.CreateDomain(s.db, domain); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	domain.AppName = app.Name
@@ -1141,7 +1182,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	if name != "" {
 		app, err := state.GetAppByName(s.db, name)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 			return
 		}
 		if app == nil {
@@ -1151,7 +1192,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 
 		domains, err := state.ListDomainsByApp(s.db, app.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 			return
 		}
 
@@ -1171,7 +1212,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	// List all domains across all apps
 	domains, err := state.ListDomains(s.db)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -1201,7 +1242,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1210,7 +1251,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := state.DeleteDomainByDomain(s.db, domainName); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -1234,7 +1275,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		if secretSettings[key] && reveal {
 			val, err := state.EncryptedGetSetting(s.db, key, s.masterKey)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{key: val})
@@ -1243,7 +1284,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 		val, err := state.GetSetting(s.db, key)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+			writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 			return
 		}
 		if secretSettings[key] {
@@ -1255,7 +1296,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	settings, err := state.GetAllSettings(s.db)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	for k := range settings {
@@ -1273,6 +1314,13 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ponytail: single key-value at a time, no transaction needed
+	// Validate key is non-empty
+	for key := range req {
+		if strings.TrimSpace(key) == "" {
+			writeError(w, http.StatusBadRequest, BadRequestError("key cannot be empty"))
+			return
+		}
+	}
 	if len(req) != 1 {
 		writeError(w, http.StatusBadRequest, BadRequestError("exactly one key=value pair required"))
 		return
@@ -1280,12 +1328,12 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	for k, v := range req {
 		if secretSettings[k] {
 			if err := state.EncryptedSetSetting(s.db, k, v, s.masterKey); err != nil {
-				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 				return
 			}
 		} else {
 			if err := state.SetSetting(s.db, k, v); err != nil {
-				writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+				writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 				return
 			}
 		}
@@ -1324,7 +1372,7 @@ func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1350,7 +1398,7 @@ func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsToken, err := state.EncryptedGetSetting(s.db, "dns_token", s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if dnsToken == "" {
@@ -1359,20 +1407,20 @@ func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsSecret, err := state.EncryptedGetSetting(s.db, "dns_secret", s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	prov, err := dns.Get(providerName, dns.Config{Token: dnsToken, Secret: dnsSecret})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	// Get domains for this app
 	domains, err := state.ListDomainsByApp(s.db, app.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
@@ -1385,8 +1433,14 @@ func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 	var errs []string
 
 	for _, d := range domains {
+		zone, err := dns.ExtractZone(r.Context(), prov, d.Domain)
+		if err != nil {
+			log.Printf("dns sync %s: %v", d.Domain, err)
+			continue
+		}
+		name := dns.ExtractName(d.Domain, zone)
 		if req.IPv4 != "" {
-			id, existed, err := prov.EnsureRecord(r.Context(), d.Domain, "", "A", req.IPv4, 300)
+			id, existed, err := prov.EnsureRecord(r.Context(), zone, name, "A", req.IPv4, 300)
 			if err != nil {
 				log.Printf("DNS sync A record error for %s: %v", d.Domain, err)
 				errs = append(errs, fmt.Sprintf("%s A: internal server error", d.Domain))
@@ -1401,7 +1455,7 @@ func (s *Server) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 			_ = id // record ID available if needed
 		}
 		if req.IPv6 != "" {
-			id, existed, err := prov.EnsureRecord(r.Context(), d.Domain, "", "AAAA", req.IPv6, 300)
+			id, existed, err := prov.EnsureRecord(r.Context(), zone, name, "AAAA", req.IPv6, 300)
 			if err != nil {
 				log.Printf("DNS sync AAAA record error for %s: %v", d.Domain, err)
 				errs = append(errs, fmt.Sprintf("%s AAAA: internal server error", d.Domain))
@@ -1432,7 +1486,7 @@ func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if app == nil {
@@ -1448,7 +1502,7 @@ func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsToken, err := state.EncryptedGetSetting(s.db, "dns_token", s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 	if dnsToken == "" {
@@ -1457,26 +1511,31 @@ func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsSecret, err := state.EncryptedGetSetting(s.db, "dns_secret", s.masterKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	prov, err := dns.Get(providerName, dns.Config{Token: dnsToken, Secret: dnsSecret})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	// Get domains for this app
 	domains, err := state.ListDomainsByApp(s.db, app.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(types.ErrInternal, err.Error()))
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
 
 	var allRecords []dns.Record
 	for _, d := range domains {
-		records, err := prov.ListRecords(r.Context(), d.Domain)
+		zone, err := dns.ExtractZone(r.Context(), prov, d.Domain)
+		if err != nil {
+			log.Printf("warning: list records for %s: %v", d.Domain, err)
+			continue
+		}
+		records, err := prov.ListRecords(r.Context(), zone)
 		if err != nil {
 			log.Printf("warning: list records for %s: %v", d.Domain, err)
 			continue

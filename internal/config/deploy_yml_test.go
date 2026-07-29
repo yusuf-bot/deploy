@@ -32,7 +32,7 @@ env:
   NODE_ENV: production
 health:
   path: /health
-  initial-delay: 3s
+  initial_delay: 3s
   interval: 5s
   timeout: 3s
   retries: 3

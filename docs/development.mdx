@@ -1,0 +1,68 @@
+---
+title: Development
+description: Dev containers, CI/CD, and Git integration.
+---
+
+# Development
+
+## Dev Containers
+
+```bash
+deploy dev start myapp
+```
+
+Starts a container with your local code mounted as a volume (hot reload). The dev container runs on `app.port + 1000`.
+
+```bash
+deploy dev stop myapp
+```
+
+## Git Push Deploy
+
+```bash
+deploy git setup
+```
+
+Creates a bare Git repository with a post-receive hook. Deploy automatically on every `git push`.
+
+## CI/CD Integration
+
+deploy's CLI is designed for CI/CD. All commands accept `--json` for structured output.
+
+### GitHub Actions
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy
+        run: |
+          ssh deploy@myserver "deploy up myapp"
+```
+
+### SSH Deploy
+
+```bash
+ssh deploy@yourserver "deploy up myapp --dir /path/to/repo"
+```
+
+## Scaffold
+
+```bash
+cd my-project
+deploy scaffold
+```
+
+Auto-detects your stack (Go, Node.js, Python, static) and generates a production-ready `deploy.yml` and multi-stage Dockerfile.
+
+Supported stacks:
+- **Go** — detects `go.mod`, generates multi-stage Go build
+- **Node.js** — detects `package.json`, generates Node Alpine build
+- **Python** — detects `requirements.txt`, generates Python slim build
+- **Static** — detects `index.html`, generates nginx image

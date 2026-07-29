@@ -19,7 +19,7 @@ var startCmd = &cobra.Command{
 		async := isAsyncFlag(cmd)
 
 		c := client.New(config.SocketPath())
-		resp, err := c.StartApp(name, !async, async)
+		resp, err := c.StartApp(name, async)
 		if err != nil {
 			return fmt.Errorf("start app: %w", err)
 		}

@@ -78,7 +78,7 @@ func validateDeployConfig(cfg *types.DeployConfig) error {
 		if p.Container < 1 || p.Container > 65535 {
 			return fmt.Errorf("ports[%d].container: must be 1-65535, got %d", i, p.Container)
 		}
-		if p.Host < 1 || p.Host > 65535 {
+		if p.Host > 0 && (p.Host < 1 || p.Host > 65535) {
 			return fmt.Errorf("ports[%d].host: must be 1-65535, got %d", i, p.Host)
 		}
 	}

@@ -12,6 +12,7 @@ const (
 	StatusUnknown  = "unknown"
 )
 
+
 // Deployment status constants.
 const (
 	DeployStatusPending    = "pending"
@@ -23,17 +24,80 @@ const (
 	DeployStatusInactive = "inactive"
 )
 
-// Error codes for structured error responses.
+
+// ErrCode is a typed error code for structured error responses.
+type ErrCode string
+
 const (
-	ErrNotFound      = "NOT_FOUND"
-	ErrConflict      = "CONFLICT"
-	ErrBadRequest    = "BAD_REQUEST"
-	ErrInternal      = "INTERNAL_ERROR"
-	ErrValidation    = "VALIDATION_ERROR"
-	ErrDocker        = "DOCKER_ERROR"
-	ErrAppRunning    = "APP_RUNNING"
-	ErrAppNotRunning = "APP_NOT_RUNNING"
+	ErrNotFound      ErrCode = "NOT_FOUND"
+	ErrConflict      ErrCode = "CONFLICT"
+	ErrBadRequest    ErrCode = "BAD_REQUEST"
+	ErrInternal      ErrCode = "INTERNAL_ERROR"
+	ErrValidation    ErrCode = "VALIDATION_ERROR"
+	ErrDocker        ErrCode = "DOCKER_ERROR"
+	ErrAppRunning    ErrCode = "APP_RUNNING"
+	ErrAppNotRunning ErrCode = "APP_NOT_RUNNING"
+	ErrBuild         ErrCode = "BUILD_ERROR"
+	ErrInfra         ErrCode = "INFRA_ERROR"
+	ErrConfig        ErrCode = "CONFIG_ERROR"
 )
+
+var ErrNotFoundSentinel = &SystemError{Code: ErrNotFound, Message: "not found"}
+
+// ValidationError: user's deploy.yml or command input is wrong
+type ValidationError struct {
+	Code    ErrCode `json:"code"`
+	Message string  `json:"message"`
+	Detail  string  `json:"detail,omitempty"`
+}
+
+func (e *ValidationError) Error() string { return e.Message }
+
+// BuildError: Docker build failed (user controls the Dockerfile)
+type BuildError struct {
+	Code    ErrCode `json:"code"`
+	Message string  `json:"message"`
+	Detail  string  `json:"detail,omitempty"`
+}
+
+func (e *BuildError) Error() string { return e.Message }
+
+// InfraError: Infrastructure issue (Docker down, DNS API timeout, disk full)
+type InfraError struct {
+	Code    ErrCode `json:"code"`
+	Message string  `json:"message"`
+	Action  string  `json:"action,omitempty"`
+}
+
+func (e *InfraError) Error() string { return e.Message }
+
+// ConfigError: Bad provider token, corrupted config (DO NOT expose credential values)
+type ConfigError struct {
+	Code    ErrCode `json:"code"`
+	Message string  `json:"message"`
+	Field   string  `json:"field,omitempty"`
+}
+
+func (e *ConfigError) Error() string { return e.Message }
+
+// SystemError: Unexpected internal error (bug in deploy)
+type SystemError struct {
+	Code    ErrCode `json:"code"`
+	Message string  `json:"message"`
+	Err     error   `json:"-"` // Original error, logged not returned
+}
+
+func (e *SystemError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return string(e.Code)
+}
+func (e *SystemError) Unwrap() error { return e.Err }
+
 
 // App represents a deployed application.
 type App struct {
@@ -41,11 +105,13 @@ type App struct {
 	Name        string            `json:"name"`
 	Status      string            `json:"status"`
 	Port        int               `json:"port"`
+	ServicePort int               `json:"service_port,omitempty"`
 	Image       string            `json:"image"`
 	Env         map[string]string `json:"env"`
 	Volumes []VolumeMapping `json:"volumes,omitempty"`
 	Dev     bool            `json:"dev,omitempty"`
 	Command string          `json:"command,omitempty"`
+	Resources *ResourceConfig `json:"resources,omitempty"`
 	ContainerID string            `json:"container_id,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
@@ -102,6 +168,7 @@ type DeployConfig struct {
 	Build     BuildConfig       `yaml:"build,omitempty"`
 	Ports     []PortMapping     `yaml:"ports,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty"`
+	Domains   []string          `yaml:"domains,omitempty"`
 	Health    HealthConfig      `yaml:"health,omitempty"`
 	Resources ResourceConfig    `yaml:"resources,omitempty"`
 	Dev       *DevConfig        `yaml:"dev,omitempty"`
@@ -126,7 +193,7 @@ type PortMapping struct {
 // HealthConfig defines health check parameters.
 type HealthConfig struct {
 	Path         string `yaml:"path,omitempty"`
-	InitialDelay string `yaml:"initial-delay,omitempty"`
+	InitialDelay string `yaml:"initial_delay,omitempty"`
 	Interval     string `yaml:"interval,omitempty"`
 	Timeout      string `yaml:"timeout,omitempty"`
 	Retries      int    `yaml:"retries,omitempty"`

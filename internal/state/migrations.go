@@ -17,6 +17,7 @@ type Migration struct {
 // v2 = Phase 2 schema (deployments + secrets tables).
 // v3 = Phase 3 schema (domains table).
 // v4 = Phase 4 schema (settings table). (domains table).
+// v5 = Phase 5 schema (port_allocations table).
 var migrations = []Migration{
 	{
 		Version: 1,
@@ -96,6 +97,18 @@ var migrations = []Migration{
 				key TEXT PRIMARY KEY,
 				value TEXT NOT NULL
 			);
+		`,
+	},
+	{
+		Version: 5,
+		SQL: `
+			CREATE TABLE IF NOT EXISTS port_allocations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				app_name TEXT NOT NULL UNIQUE,
+				port INTEGER NOT NULL UNIQUE,
+				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			);
+			INSERT OR IGNORE INTO port_allocations (app_name, port) SELECT name, port FROM apps;
 		`,
 	},
 }

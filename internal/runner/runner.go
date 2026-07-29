@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
 	"deploy/internal/types"
 
+	"github.com/docker/go-units"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -61,7 +63,12 @@ func (d *DockerRunner) PullImage(ctx context.Context, imageStr string) error {
 
 // CreateContainer creates a container but does not start it.
 func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App, version string) (string, error) {
-	portStr := fmt.Sprintf("%d/tcp", app.Port)
+	// Use ServicePort as container port if set, otherwise same as host port
+	containerPort := app.Port
+	if app.ServicePort > 0 {
+		containerPort = app.ServicePort
+	}
+	portStr := fmt.Sprintf("%d/tcp", containerPort)
 	np := network.MustParsePort(portStr)
 
 	exposedPorts := network.PortSet{
@@ -94,6 +101,20 @@ func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App, vers
 	hostCfg := &container.HostConfig{
 		PortBindings:  portBindings,
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+	}
+
+	// Apply resource limits from app config
+	if app.Resources != nil {
+		if app.Resources.Memory != "" {
+			if memBytes, err := units.RAMInBytes(app.Resources.Memory); err == nil {
+				hostCfg.Memory = memBytes
+			}
+		}
+		if app.Resources.CPUs != "" {
+			if cpuFloat, err := strconv.ParseFloat(app.Resources.CPUs, 64); err == nil {
+				hostCfg.NanoCPUs = int64(cpuFloat * 1e9)
+			}
+		}
 	}
 
 	if len(app.Volumes) > 0 {
@@ -281,7 +302,7 @@ func (d *DockerRunner) HealthCheck(ctx context.Context, containerID string, port
 
 	// 2. HTTP health check
 	httpClient := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("http://localhost:%d%s", port, path)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 
 	for i := 0; i < retries; i++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"deploy/internal/config"
 
@@ -36,14 +37,22 @@ var promoteCmd = &cobra.Command{
 
 		wait := waitFlag
 
+		absDir, err := filepath.Abs(promoteDir)
+		if err != nil {
+			return fmt.Errorf("resolve directory: %w", err)
+		}
+
 		c := newClient()
-		resp, err := c.Promote(appName, promoteDir, wait)
+		resp, err := c.Promote(appName, absDir, wait)
 		if err != nil {
 			return fmt.Errorf("promote: %w", err)
 		}
 
 		if jsonFlag {
-			data, _ := json.MarshalIndent(resp, "", "  ")
+			data, err := json.MarshalIndent(resp, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
 			fmt.Println(string(data))
 			return nil
 		}

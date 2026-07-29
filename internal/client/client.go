@@ -26,7 +26,7 @@ func New(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
 		http: http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 5 * time.Minute,
 			Transport: &http.Transport{
 				Dial: func(network, addr string) (net.Conn, error) {
 					return net.DialTimeout("unix", socketPath, 5*time.Second)
@@ -129,12 +129,9 @@ func (c *Client) DeleteApp(name string) error {
 }
 
 // StartApp starts an app.
-func (c *Client) StartApp(name string, wait bool, async bool) (*types.StartStopResponse, error) {
+func (c *Client) StartApp(name string, async bool) (*types.StartStopResponse, error) {
 	path := "/api/v1/apps/" + name + "/start"
 	params := ""
-	if !wait {
-		params += "wait=false"
-	}
 	if async {
 		if params != "" {
 			params += "&"
@@ -153,12 +150,9 @@ func (c *Client) StartApp(name string, wait bool, async bool) (*types.StartStopR
 }
 
 // StopApp stops an app.
-func (c *Client) StopApp(name string, wait bool, async bool) (*types.StartStopResponse, error) {
+func (c *Client) StopApp(name string, async bool) (*types.StartStopResponse, error) {
 	path := "/api/v1/apps/" + name + "/stop"
 	params := ""
-	if !wait {
-		params += "wait=false"
-	}
 	if async {
 		if params != "" {
 			params += "&"

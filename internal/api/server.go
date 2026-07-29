@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"deploy/internal/caddyfile"
@@ -26,6 +27,7 @@ type Server struct {
 	scheduler    *scheduler.Scheduler
 	deployer     *deploy.Deployer
 	caddyManager *caddyfile.CaddyManager
+	httpServer   *http.Server
 	mux          http.Handler
 	masterKey    []byte
 	startedAt    time.Time
@@ -78,18 +80,24 @@ func (s *Server) ListenAndServe() error {
 		return fmt.Errorf("remove old socket: %w", err)
 	}
 
+	// Ensure socket directory exists
+	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0770); err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+
 	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
 	}
 
-	if err := os.Chmod(s.socketPath, 0700); err != nil {
+	if err := os.Chmod(s.socketPath, 0770); err != nil {
 		listener.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
+	s.httpServer = &http.Server{Handler: s.mux}
 	log.Printf("API server listening on %s", s.socketPath)
-	return http.Serve(listener, s.mux)
+	return s.httpServer.Serve(listener)
 }
 
 // registerRoutes sets up the HTTP router with middleware.
@@ -164,4 +172,12 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, errResp types.ErrorResponse) {
 	writeJSON(w, status, errResp)
+}
+
+// Shutdown gracefully stops the HTTP server, draining in-flight requests.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
 }

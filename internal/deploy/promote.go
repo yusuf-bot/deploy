@@ -7,11 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
 	"deploy/internal/build"
 	"deploy/internal/audit"
 	"deploy/internal/caddyfile"
@@ -19,7 +17,6 @@ import (
 	"deploy/internal/runner"
 	"deploy/internal/state"
 	"deploy/internal/types"
-
 	"github.com/google/uuid"
 	moby "github.com/moby/moby/client"
 )
@@ -82,7 +79,7 @@ func defaultHealthCheck(ctx context.Context, port int, path string,
 	}
 
 	httpClient := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("http://localhost:%d%s", port, path)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 
 	for i := 0; i < retries; i++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -119,18 +116,41 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	startTime := time.Now()
 	var auditVersion string
 
+	cfg, err := config.LoadDeployConfig(filepath.Join(dir, "deploy.yml"))
+	if err != nil {
+		return nil, fmt.Errorf("parse deploy.yml: %w", err)
+	}
+
 	app, err := state.GetAppByName(d.db, appName)
 	if err != nil {
 		return nil, fmt.Errorf("get app: %w", err)
 	}
 	if app == nil {
-		return nil, fmt.Errorf("app %q not found", appName)
-	}
-
-	// Parse deploy.yml
-	cfg, err := config.LoadDeployConfig(filepath.Join(dir, "deploy.yml"))
-	if err != nil {
-		return nil, fmt.Errorf("parse deploy.yml: %w", err)
+		// Auto-create app from deploy.yml
+		var hostPort int
+		if len(cfg.Ports) > 0 && cfg.Ports[0].Host > 0 {
+			hostPort = cfg.Ports[0].Host
+		} else {
+			// Auto-assign from pool on first deploy
+			assigned, err := state.AllocatePort(d.db, appName, nil)
+			if err != nil {
+				return nil, fmt.Errorf("auto-assigning port: %w", err)
+			}
+			hostPort = assigned
+		}
+		newApp := &types.App{
+			ID:     uuid.New().String(),
+			Name:   appName,
+			Status: types.StatusCreated,
+			Port:   hostPort,
+			Image:  appName + ":latest",
+			Env:    cfg.Env,
+		}
+		if _, createErr := state.CreateApp(d.db, newApp); createErr != nil {
+			return nil, fmt.Errorf("create app %q: %w", appName, createErr)
+		}
+		app = newApp
+		log.Printf("auto-created app %q from deploy.yml (port=%d)", appName, hostPort)
 	}
 
 	// 1. Build the image
@@ -145,39 +165,20 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 
 	log.Printf("building %s (dockerfile=%s, context=%s)", imageRef, dockerfilePath, buildContextDir)
 
-	buildResult, err := d.buildImage(ctx, buildContextDir, dockerfilePath, imageRef)
+	builder := build.NewBuilder(d.client)
+	buildCfg := build.BuildConfig{
+		ImageRef:   imageRef,
+		ContextDir: buildContextDir,
+		Dockerfile: cfg.Build.Dockerfile,
+		BuildArgs:  cfg.Build.Args,
+		Target:     cfg.Build.Target,
+	}
+	buildResult, err := builder.BuildFromConfig(ctx, buildCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build image: %w", err)
 	}
+	digest := buildResult.ImageDigest
 
-	// 2. Save image to tarball for rollback archive
-	tarballPath := build.TarballPath(appName, version)
-	if err := os.MkdirAll(filepath.Dir(tarballPath), 0700); err != nil {
-		return nil, fmt.Errorf("create tarball dir: %w", err)
-	}
-
-	saveResult, err := d.client.ImageSave(ctx, []string{imageRef})
-	if err != nil {
-		return nil, fmt.Errorf("save image: %w", err)
-	}
-	defer saveResult.Close()
-
-	tarball, err := os.Create(tarballPath)
-	if err != nil {
-		return nil, fmt.Errorf("create tarball file: %w", err)
-	}
-	defer tarball.Close()
-
-	if _, err := io.Copy(tarball, saveResult); err != nil {
-		return nil, fmt.Errorf("write tarball: %w", err)
-	}
-
-	// 3. Inspect the built image for digest
-	imgInspect, err := d.client.ImageInspect(ctx, imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("inspect image: %w", err)
-	}
-	digest := imgInspect.ID
 
 	// Record old container ID before making any changes
 	// (used for rollback in case new container fails health check)
@@ -220,7 +221,15 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if err != nil {
 		secrets = nil
 	}
-	mergedEnv := mergeEnv(app.Env, secrets)
+	// Merge deploy.yml env into app env (deploy.yml overrides DB)
+	mergedAppEnv := make(map[string]string)
+	for k, v := range app.Env {
+		mergedAppEnv[k] = v
+	}
+	for k, v := range cfg.Env {
+		mergedAppEnv[k] = v
+	}
+	mergedEnv := mergeEnv(mergedAppEnv, secrets)
 
 	// 7. Start new container on appPort+1
 	hostPort := app.Port + 1
@@ -229,7 +238,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		svcPort = cfg.Ports[0].Container
 	}
 
-	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version)
+	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version, cfg.Resources)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))
@@ -238,7 +247,9 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 
 	// Start the container
 	if err := d.runner.StartContainer(ctx, containerID); err != nil {
-		d.runner.RemoveContainer(ctx, containerID)
+		if err := d.runner.RemoveContainer(ctx, containerID); err != nil {
+			log.Printf("warning: remove container %s: %v", containerID[:12], err)
+		}
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("start container: %v", err))
 		return nil, fmt.Errorf("start container: %w", err)
@@ -275,7 +286,9 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	log.Printf("health checking new container %s on port %d...", containerID[:12], hostPort)
 	if err := d.runner.HealthCheck(ctx, containerID, hostPort, healthPath, initialDelay, interval, timeout, retries); err != nil {
 		d.runner.StopContainer(ctx, containerID)
-		d.runner.RemoveContainer(ctx, containerID)
+		if err := d.runner.RemoveContainer(ctx, containerID); err != nil {
+			log.Printf("warning: remove container %s: %v", containerID[:12], err)
+		}
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("health check: %v", err))
 
@@ -292,12 +305,13 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		}
 
 		audit.Log(audit.Entry{
-			Time:       time.Now().UTC(),
-			Action:     "promote",
-			App:        appName,
-			Version:    auditVersion,
-			DurationMs: time.Since(startTime).Milliseconds(),
-			Result:     fmt.Sprintf("health check: %v", err),
+			Time:        time.Now().UTC(),
+			Action:      "promote",
+			App:         appName,
+			Version:     auditVersion,
+			DurationMs:  time.Since(startTime).Milliseconds(),
+			Result:      fmt.Sprintf("health check: %v", err),
+			InitiatedBy: audit.CurrentUser(),
 		})
 		return nil, fmt.Errorf("health check: %w", err)
 	}
@@ -332,6 +346,9 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
 	}
+	if err := state.UpdateAppStatus(tx, appName, types.StatusRunning); err != nil {
+		return nil, fmt.Errorf("update app status: %w", err)
+	}
 	if err := state.UpdateDeploymentStatus(tx, depID, types.DeployStatusActive, ""); err != nil {
 		return nil, fmt.Errorf("update deployment status: %w", err)
 	}
@@ -346,68 +363,50 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
+	// 12. Update port allocation
+	if err := state.UpdatePortAllocation(d.db, appName, hostPort); err != nil {
+		log.Printf("warning: update port allocation: %v", err)
+	}
+
+	// Register domains from deploy.yml
+	if d.caddyManager != nil && d.caddyManager.IsRunning() {
+		for _, domain := range cfg.Domains {
+			if err := d.caddyManager.AddDomainSnippet(appName, domain, hostPort); err != nil {
+				log.Printf("warning: failed to register domain %s: %v", domain, err)
+			}
+		}
+	}
+
 	log.Printf("promoted %s -> %s (container=%s, port=%d)", appName, version, containerID[:12], hostPort)
 	// Clean up old tarballs (non-fatal)
 	if err := build.CleanOldTarballs(appName, 5); err != nil {
 		log.Printf("warning: clean old tarballs: %v", err)
 	}
 	audit.Log(audit.Entry{
-		Time:       time.Now().UTC(),
-		Action:     "promote",
-		App:        appName,
-		Version:    version,
-		DurationMs: time.Since(startTime).Milliseconds(),
-		Result:     "ok",
+		Time:        time.Now().UTC(),
+		Action:      "promote",
+		App:         appName,
+		Version:     version,
+		DurationMs:  time.Since(startTime).Milliseconds(),
+		Result:      "ok",
+		InitiatedBy: audit.CurrentUser(),
 	})
 	return &types.PromoteResponse{
-		Message:       fmt.Sprintf("promoted %s to %s in %.0fs", appName, version, time.Since(dep.CreatedAt).Seconds()),
-		Version:       version,
+		Message:        fmt.Sprintf("promoted %s to %s in %.0fs", appName, version, time.Since(dep.CreatedAt).Seconds()),
+		Version:        version,
 		NewContainerID: containerID,
-		Port:          hostPort,
+		Port:           hostPort,
 		OldContainerID: oldContainerID,
 	}, nil
 }
 
-func (d *Deployer) buildImage(ctx context.Context, contextDir, dockerfilePath, imageRef string) (*buildResult, error) {
-	// Create a tar of the build context with the Dockerfile
-	buildContext, err := build.CreateBuildContext(contextDir, dockerfilePath)
-	if err != nil {
-		return nil, fmt.Errorf("create build context: %w", err)
-	}
-	defer buildContext.Close()
+// parseDockerBuildResponse reads a Docker build JSON stream and returns
+// the build output. If the build fails, it returns a BuildError with detail.
 
-	buildResp, err := d.client.ImageBuild(ctx, buildContext, moby.ImageBuildOptions{
-		Tags:           []string{imageRef},
-		Dockerfile:     filepath.Base(dockerfilePath),
-		SuppressOutput: true,
-		Remove:         true,
-		ForceRemove:    true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("docker build: %w", err)
-	}
-	defer buildResp.Body.Close()
-
-	// Drain the build output
-	if _, err := io.Copy(io.Discard, buildResp.Body); err != nil {
-		return nil, fmt.Errorf("read build output: %w", err)
-	}
-
-	return &buildResult{
-		Version:     strings.Split(imageRef, ":")[1],
-		ImageRef:    imageRef,
-		ImageDigest: "",
-	}, nil
-}
 // buildResult holds the result of a successful image build.
-type buildResult struct {
-	Version     string
-	ImageRef    string
-	ImageDigest string
-}
 
 // createPromoteContainer sets up the container config for a new deployment.
-func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int, version string) (string, error) {
+func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int, version string, resources types.ResourceConfig) (string, error) {
 	// Convert []string env (KEY=VALUE) to map[string]string for the app object
 	envMap := make(map[string]string, len(env))
 	for _, e := range env {
@@ -419,9 +418,14 @@ func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, i
 	promoteApp := &types.App{
 		ID:    app.ID,
 		Name:  app.Name,
-		Port:  hostPort,
+		Port:        hostPort,
+		ServicePort: svcPort,
 		Image: imageRef,
 		Env:   envMap,
+	}
+	if resources.Memory != "" || resources.CPUs != "" {
+		r := resources
+		promoteApp.Resources = &r
 	}
 	return d.runner.CreateContainer(ctx, promoteApp, version)
 }

@@ -79,8 +79,11 @@ func (s *Scheduler) worker() {
 func (s *Scheduler) executeTask(task *jobTask) {
 	start := time.Now().UTC()
 	result := task.Result
+
+	s.mu.Lock()
 	result.Job.Status = "running"
 	result.Job.CreatedAt = start
+	s.mu.Unlock()
 
 	execCtx, cancel := context.WithTimeout(s.ctx, 5*time.Minute)
 	res, err := task.Fn(execCtx)
@@ -88,6 +91,7 @@ func (s *Scheduler) executeTask(task *jobTask) {
 
 	now := time.Now().UTC()
 
+	s.mu.Lock()
 	if err != nil {
 		result.Error = err.Error()
 		result.Job.Status = "failed"
@@ -97,8 +101,9 @@ func (s *Scheduler) executeTask(task *jobTask) {
 		result.Job.Status = "done"
 		result.Job.Result = res
 	}
-
 	result.Job.CompletedAt = &now
+	s.mu.Unlock()
+
 	close(result.Done)
 
 	// Persist to SQLite
@@ -154,8 +159,9 @@ func (s *Scheduler) GetJobResult(id string) *JobResult {
 func (s *Scheduler) GetJob(id string) (*types.Job, error) {
 	s.mu.Lock()
 	if jr, ok := s.jobs[id]; ok {
+		jobCopy := *jr.Job
 		s.mu.Unlock()
-		return jr.Job, nil
+		return &jobCopy, nil
 	}
 	s.mu.Unlock()
 

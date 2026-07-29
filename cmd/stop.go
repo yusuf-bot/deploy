@@ -15,13 +15,16 @@ var stopCmd = &cobra.Command{
 		name := args[0]
 
 		c := newClient()
-		resp, err := c.StopApp(name, !asyncFlag, asyncFlag)
+		resp, err := c.StopApp(name, asyncFlag)
 		if err != nil {
 			return fmt.Errorf("stop app: %w", err)
 		}
 
 		if jsonFlag {
-			data, _ := json.MarshalIndent(resp, "", "  ")
+			data, err := json.MarshalIndent(resp, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
 			fmt.Println(string(data))
 			return nil
 		}

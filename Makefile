@@ -2,7 +2,7 @@
 
 BINARY=deploy
 BINDIR=bin
-GOFLAGS=-ldflags="-s -w"
+GOFLAGS=-ldflags="-s -w -X 'deploy/cmd.Version=0.2.0'"
 
 all: test build
 

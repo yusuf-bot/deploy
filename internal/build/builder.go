@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +44,22 @@ func buildContextReader(contextDir string) (io.ReadCloser, error) {
 func tarDir(w io.WriteCloser, dir string) error {
 	gw := gzip.NewWriter(w)
 	tw := tar.NewWriter(gw)
+	// Load .dockerignore if present
+	ignorePatterns := loadDockerIgnore(dir)
+
+	// Auto-exclude common patterns
+	autoExclude := []string{
+		"node_modules", ".git", ".hg", ".bzr", ".svn",
+		"*.log", "*.db", "*.sqlite", "*.sqlite3",
+		".cache", "tmp", ".tmp", "*.tmp",
+		".DS_Store", "Thumbs.db",
+		".env", ".env.local",
+	}
+	// Merge auto-exclude with .dockerignore patterns
+	allPatterns := autoExclude
+	if ignorePatterns != nil {
+		allPatterns = append(allPatterns, ignorePatterns...)
+	}
 
 	err := filepath.Walk(dir, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
@@ -55,6 +73,30 @@ func tarDir(w io.WriteCloser, dir string) error {
 		}
 		if relPath == "." {
 			return nil
+		}
+
+		if isExcluded(relPath, fi.IsDir(), allPatterns) {
+			if fi.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Handle symlinks: read link target, create header, no content
+		if fi.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", path, err)
+			}
+			header, err := tar.FileInfoHeader(fi, linkTarget)
+			if err != nil {
+				return fmt.Errorf("tar header for %s: %w", relPath, err)
+			}
+			header.Name = filepath.ToSlash(relPath)
+			if err := tw.WriteHeader(header); err != nil {
+				return fmt.Errorf("write tar header for %s: %w", relPath, err)
+			}
+			return nil // symlinks have no content to copy
 		}
 
 		header, err := tar.FileInfoHeader(fi, "")
@@ -77,8 +119,14 @@ func tarDir(w io.WriteCloser, dir string) error {
 				return fmt.Errorf("open %s: %w", path, err)
 			}
 			defer f.Close()
-			if _, err := io.Copy(tw, f); err != nil {
+			written, err := io.Copy(tw, io.LimitReader(f, header.Size))
+			if err != nil {
 				return fmt.Errorf("copy %s: %w", path, err)
+			}
+			if written < header.Size {
+				// File shrunk between stat and read — this is unusual
+				// but not fatal. Continue with what we have.
+				log.Printf("warning: file %s changed size while reading (%d < %d)", path, written, header.Size)
 			}
 		}
 		return nil
@@ -144,8 +192,11 @@ func (b *Builder) Build(ctx context.Context, appDir string) (*types.BuildResult,
 		return nil, fmt.Errorf("docker build: %w", err)
 	}
 	defer resp.Body.Close()
-	// Drain build output
-	io.Copy(io.Discard, resp.Body)
+
+	// Parse the build response — captures output and detects build errors
+	if err := parseBuildResponse(resp.Body); err != nil {
+		return nil, err
+	}
 
 	// 6. Inspect image to get digest
 	imageID, err := getImageDigest(ctx, b.client, imageRef)
@@ -173,6 +224,105 @@ func (b *Builder) Build(ctx context.Context, appDir string) (*types.BuildResult,
 	}, nil
 }
 
+// BuildConfig holds parameters for a single Docker image build.
+type BuildConfig struct {
+	ImageRef   string
+	ContextDir string
+	Dockerfile string
+	BuildArgs  map[string]string
+	Target     string
+}
+
+// BuildFromConfig performs a build using the given configuration.
+// This is the single code path for all image builds — ensures consistent
+// handling of build args, dockerignore, and multi-stage builds.
+func (b *Builder) BuildFromConfig(ctx context.Context, cfg BuildConfig) (*types.BuildResult, error) {
+	// Create build context
+	buildCtx, err := CreateBuildContext(cfg.ContextDir, cfg.Dockerfile)
+	if err != nil {
+		return nil, fmt.Errorf("create build context: %w", err)
+	}
+	defer buildCtx.Close()
+
+	// Build args: convert map[string]string to map[string]*string
+	buildArgs := make(map[string]*string)
+	for k, v := range cfg.BuildArgs {
+		val := v
+		buildArgs[k] = &val
+	}
+
+	opts := moby.ImageBuildOptions{
+		Tags:       []string{cfg.ImageRef},
+		Dockerfile: cfg.Dockerfile,
+		BuildArgs:  buildArgs,
+		Target:     cfg.Target,
+		Remove:     true,
+		ForceRemove: true,
+	}
+
+	resp, err := b.client.ImageBuild(ctx, buildCtx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("docker build: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Parse the build response
+	if err := parseBuildResponse(resp.Body); err != nil {
+		return nil, err
+	}
+
+	// Inspect image to get digest
+	imageID, err := getImageDigest(ctx, b.client, cfg.ImageRef)
+	if err != nil {
+		return nil, fmt.Errorf("get image digest: %w", err)
+	}
+
+	// Save tarball
+	appName := strings.Split(cfg.ImageRef, ":")[0]
+	version := strings.Split(cfg.ImageRef, ":")[1]
+	tarballPath, err := SaveImage(ctx, b.client, cfg.ImageRef, appName, version)
+	if err != nil {
+		return nil, fmt.Errorf("save image: %w", err)
+	}
+
+	return &types.BuildResult{
+		Version:     version,
+		ImageRef:    cfg.ImageRef,
+		TarballPath: tarballPath,
+		ImageDigest: imageID,
+	}, nil
+}
+
+// parseBuildResponse reads a Docker build JSON stream. Returns a BuildError
+// with captured output if the build fails.
+func parseBuildResponse(body io.ReadCloser) error {
+	defer body.Close()
+	var buildOutput strings.Builder
+	decoder := json.NewDecoder(body)
+	for {
+		var msg struct {
+			Stream string `json:"stream"`
+			Error  string `json:"error"`
+		}
+		if err := decoder.Decode(&msg); err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("parse build output: %w", err)
+		}
+		if msg.Stream != "" {
+			buildOutput.WriteString(msg.Stream)
+		}
+		if msg.Error != "" {
+			return &types.BuildError{
+				Code:    types.ErrBuild,
+				Message: "docker build failed",
+				Detail:  buildOutput.String(),
+			}
+		}
+	}
+	return nil
+}
+
 // getImageDigest inspects the image and returns its ID (sha256).
 func getImageDigest(ctx context.Context, cl dockerClient, imageRef string) (string, error) {
 	info, err := cl.ImageInspect(ctx, imageRef)
@@ -190,4 +340,78 @@ func getImageDigest(ctx context.Context, cl dockerClient, imageRef string) (stri
 // suitable for use as a Docker build context.
 func CreateBuildContext(contextDir string, _ string) (io.ReadCloser, error) {
 	return buildContextReader(contextDir)
+}
+
+// loadDockerIgnore reads .dockerignore from the context directory.
+// Returns nil if the file doesn't exist.
+func loadDockerIgnore(dir string) []string {
+	path := filepath.Join(dir, ".dockerignore")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var patterns []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+	return patterns
+}
+
+// isExcluded checks if a file/dir matches any .dockerignore pattern.
+func isExcluded(relPath string, isDir bool, patterns []string) bool {
+	rel := filepath.ToSlash(relPath)
+	base := filepath.Base(rel)
+
+	for _, p := range patterns {
+		// Handle negation
+		negate := false
+		if strings.HasPrefix(p, "!") {
+			negate = true
+			p = p[1:]
+		}
+
+		// Directory-only pattern (trailing /)
+		dirOnly := false
+		if strings.HasSuffix(p, "/") {
+			dirOnly = true
+			p = strings.TrimSuffix(p, "/")
+		}
+		if dirOnly && !isDir {
+			continue
+		}
+
+		// Clean leading ./
+		p = strings.TrimPrefix(p, "./")
+
+		matched := false
+
+		// Match against full relative path
+		if m, _ := filepath.Match(p, rel); m {
+			matched = true
+		}
+		// Match against basename
+		if !matched {
+			if m, _ := filepath.Match(p, base); m {
+				matched = true
+			}
+		}
+		// For bare names without wildcards, check each path component
+		if !matched && !strings.ContainsAny(p, "*?[") {
+			for _, part := range strings.Split(rel, "/") {
+				if part == p {
+					matched = true
+					break
+				}
+			}
+		}
+
+		if matched {
+			return !negate
+		}
+	}
+	return false
 }

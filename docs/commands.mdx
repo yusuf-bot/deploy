@@ -1,0 +1,116 @@
+---
+title: Commands
+description: Full reference for every deploy command.
+---
+
+# Commands
+
+## Core
+
+### `deploy init`
+Initialize the deploy environment. Creates `~/.deploy/`, SQLite database, master key, and Caddy directory. Runs interactive wizard when in a terminal.
+
+Flags: `--no-systemd` — Skip systemd service setup
+
+### `deploy up <name>`
+Primary deploy command. Builds Docker image, starts new container, health checks, swaps Caddy config, stops old container. Zero-downtime.
+
+Alias: `deploy promote`
+
+### `deploy rollback <name>`
+Revert to the previous deployment. Loads last tarball, starts it, health checks, swaps traffic.
+
+### `deploy start <name>`
+Start a stopped application.
+
+### `deploy stop <name>`
+Stop a running application.
+
+### `deploy restart <name>`
+Restart an application.
+
+### `deploy rm <name>`
+Remove an application completely. Confirms before deleting. Use `--force` to skip confirmation.
+
+### `deploy status [name]`
+Show status of all apps or a specific app.
+
+### `deploy logs <name>`
+Stream container logs. Use `--tail N` for last N lines, `--follow` to follow.
+
+## Domains & DNS
+
+### `deploy domain add <name> <domain>`
+Attach a domain to an app.
+
+### `deploy domain rm <name> <domain>`
+Remove a domain.
+
+### `deploy domain ls [name]`
+List domains for an app or all apps.
+
+### `deploy domain dns sync <name>`
+Sync A/AAAA records with DNS provider (requires `dns_provider` and `dns_token` config). Supports 6 providers.
+
+### `deploy domain dns list <name>`
+List DNS records from provider.
+
+## Config
+
+### `deploy config get [key]`
+Get config value. Without key, shows all.
+
+### `deploy config set <key> <value>`
+Set config value. Supports `key=value` and `key value` formats.
+
+## Secrets
+
+### `deploy secrets set <name> <key>=<value>`
+Set an encrypted secret.
+
+### `deploy secrets get <name> <key>`
+Get a secret value (requires `--reveal`).
+
+### `deploy secrets rm <name> <key>`
+Remove a secret.
+
+### `deploy secrets ls <name>`
+List secret keys for an app.
+
+## Development
+
+### `deploy scaffold`
+Auto-detect application stack and generate `deploy.yml` + Dockerfile. Supports Go, Node.js, Python, and static sites.
+
+Use `--dir <path>` to target a different directory.
+
+### `deploy dev start <name>`
+Start a dev container with volume mounts (port + 1000).
+
+### `deploy dev stop <name>`
+Stop a dev container.
+
+## Operations
+
+### `deploy audit`
+Show the audit log of all actions.
+
+### `deploy backup`
+Create a full backup of deploy state.
+
+### `deploy restore <file>`
+Restore from a backup file.
+
+### `deploy usage [name]`
+Show container CPU/memory usage.
+
+### `deploy ssh <name>`
+Open an interactive shell in a running container.
+
+### `deploy uninstall`
+Remove deploy completely. Requires typing `DELETE` to confirm. Use `--force` to skip.
+
+## CI/CD
+
+### `deploy git setup`
+Create a bare Git repo with post-receive hook that auto-deploys on push.

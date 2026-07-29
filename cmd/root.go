@@ -18,7 +18,7 @@ var (
 	waitFlag  bool
 	asyncFlag bool
 )
-var Version = "dev"
+var Version = "0.3.0"
 
 // rootCmd represents the base command.
 var rootCmd = &cobra.Command{
@@ -57,8 +57,6 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&waitFlag, "wait", true, "Wait for operation to complete")
 	rootCmd.PersistentFlags().BoolVar(&asyncFlag, "async", false, "Run operation asynchronously")
 
-	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(app.Cmd)
 
 	var versionCmd = &cobra.Command{
