@@ -5,13 +5,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"bufio"
 	"io"
+	"strings"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
 
-	"deploy/internal/dns"
 	"deploy/internal/types"
 )
 
@@ -221,6 +222,80 @@ func (c *Client) Promote(appName string, dir string, wait bool) (*types.PromoteR
 	return &result, nil
 }
 
+// PromoteStream promotes a new deployment with streaming progress events.
+func (c *Client) PromoteStream(appName string, dir string, progressFn func(types.ProgressEvent)) (*types.PromoteResponse, error) {
+	path := "/api/v1/apps/" + appName + "/promote"
+	reqBody := map[string]string{"dir": dir}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", "http://unix"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		var errResp types.ErrorResponse
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Code != "" {
+			return nil, fmt.Errorf("%s: %s", errResp.Code, errResp.Detail)
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Read SSE stream
+	scanner := bufio.NewScanner(resp.Body)
+	var currentEvent string
+	var result types.PromoteResponse
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			currentEvent = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			data := strings.TrimPrefix(line, "data: ")
+			switch currentEvent {
+			case "progress":
+				var evt types.ProgressEvent
+				if json.Unmarshal([]byte(data), &evt) == nil && progressFn != nil && evt.Step != "" {
+					progressFn(evt)
+				}
+			case "result":
+				json.Unmarshal([]byte(data), &result)
+			case "error":
+				var errData map[string]string
+				if json.Unmarshal([]byte(data), &errData) != nil {
+					return nil, fmt.Errorf("%s", data)
+				}
+				if msg, ok := errData["error"]; ok {
+					return nil, fmt.Errorf("%s", msg)
+				}
+				return nil, fmt.Errorf("%s", data)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read stream: %w", err)
+	}
+
+	if result.Message == "" {
+		return nil, fmt.Errorf("unexpected end of stream")
+	}
+	return &result, nil
+}
+
 // Rollback rolls back an app to a previous version.
 func (c *Client) Rollback(appName string, version string) (*types.PromoteResponse, error) {
 	req := map[string]string{"version": version}
@@ -384,47 +459,6 @@ func (c *Client) DevStop(name string) (*types.StartStopResponse, error) {
 		return nil, err
 	}
 	return &result, nil
-}
-
-// --- DNS ---
-
-// DNSSyncResult records the result of syncing a single DNS record.
-type DNSSyncResult struct {
-	Domain  string `json:"domain"`
-	Type    string `json:"type"`
-	Value   string `json:"value"`
-	Existed bool   `json:"existed"`
-}
-
-// DNSSyncResponse is the response for a DNS sync operation.
-type DNSSyncResponse struct {
-	Results []DNSSyncResult `json:"results"`
-	Errors  []string        `json:"errors,omitempty"`
-}
-
-// DNSSync ensures A/AAAA records exist for all domains of an app.
-func (c *Client) DNSSync(name, ipv4, ipv6 string) (*DNSSyncResponse, error) {
-	body := map[string]string{}
-	if ipv4 != "" {
-		body["ipv4"] = ipv4
-	}
-	if ipv6 != "" {
-		body["ipv6"] = ipv6
-	}
-	var result DNSSyncResponse
-	if err := c.doRequest("POST", "/api/v1/apps/"+name+"/dns/sync", body, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// DNSList returns all DNS records for an app's domains.
-func (c *Client) DNSList(name string) ([]dns.Record, error) {
-	var result []dns.Record
-	if err := c.doRequest("GET", "/api/v1/apps/"+name+"/dns/records", nil, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 // Shutdown tells the daemon to shut down gracefully.

@@ -152,11 +152,6 @@ func (s *Server) registerRoutes() {
 	mux.HandleFunc("POST /api/v1/apps/{name}/dev/start", s.handleDevStart)
 	mux.HandleFunc("POST /api/v1/apps/{name}/dev/stop", s.handleDevStop)
 
-	// Phase 8: DNS automation
-	mux.HandleFunc("POST /api/v1/apps/{name}/dns/sync", s.handleDNSSync)
-	mux.HandleFunc("GET /api/v1/apps/{name}/dns/records", s.handleDNSList)
-
-
 	s.mux = panicRecoveryMiddleware(loggingMiddleware(mux))
 }
 

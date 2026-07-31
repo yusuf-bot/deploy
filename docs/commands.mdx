@@ -12,13 +12,14 @@ Initialize the deploy environment. Creates `~/.deploy/`, SQLite database, master
 
 Flags: `--no-systemd` — Skip systemd service setup
 
-### `deploy up <name>`
+### `deploy up [app-name]`
 Primary deploy command. Builds Docker image, starts new container, health checks, swaps Caddy config, stops old container. Zero-downtime.
 
 Alias: `deploy promote`
+Use `--dir <path>` to specify the app directory (default: `.`).
 
-### `deploy rollback <name>`
-Revert to the previous deployment. Loads last tarball, starts it, health checks, swaps traffic.
+### `deploy rollback <name> [version]`
+Revert to a specific version or the previous deployment. Loads last tarball, starts it, health checks, swaps traffic.
 
 ### `deploy start <name>`
 Start a stopped application.
@@ -38,7 +39,7 @@ Show status of all apps or a specific app.
 ### `deploy logs <name>`
 Stream container logs. Use `--tail N` for last N lines, `--follow` to follow.
 
-## Domains & DNS
+## Domains
 
 ### `deploy domain add <name> <domain>`
 Attach a domain to an app.
@@ -48,12 +49,6 @@ Remove a domain.
 
 ### `deploy domain ls [name]`
 List domains for an app or all apps.
-
-### `deploy domain dns sync <name>`
-Sync A/AAAA records with DNS provider (requires `dns_provider` and `dns_token` config). Supports 6 providers.
-
-### `deploy domain dns list <name>`
-List DNS records from provider.
 
 ## Config
 
@@ -69,7 +64,7 @@ Set config value. Supports `key=value` and `key value` formats.
 Set an encrypted secret.
 
 ### `deploy secrets get <name> <key>`
-Get a secret value (requires `--reveal`).
+Get a secret value (requires `--raw`).
 
 ### `deploy secrets rm <name> <key>`
 Remove a secret.
@@ -92,8 +87,8 @@ Stop a dev container.
 
 ## Operations
 
-### `deploy audit`
-Show the audit log of all actions.
+### `deploy audit [app-name]`
+Show the audit log, optionally filtered by app. Use `--tail, -n` to set entry count (default 20).
 
 ### `deploy backup`
 Create a full backup of deploy state.
@@ -101,7 +96,7 @@ Create a full backup of deploy state.
 ### `deploy restore <file>`
 Restore from a backup file.
 
-### `deploy usage [name]`
+### `deploy usage <name>`
 Show container CPU/memory usage.
 
 ### `deploy ssh <name>`
@@ -112,5 +107,5 @@ Remove deploy completely. Requires typing `DELETE` to confirm. Use `--force` to 
 
 ## CI/CD
 
-### `deploy git setup`
+### `deploy git setup <name>`
 Create a bare Git repo with post-receive hook that auto-deploys on push.

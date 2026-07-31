@@ -21,6 +21,10 @@ import (
 	moby "github.com/moby/moby/client"
 )
 
+
+// ProgressFunc is a callback for streaming progress during long operations.
+type ProgressFunc func(event types.ProgressEvent)
+
 // dockerClient abstracts the Docker SDK operations the deployer needs.
 type dockerClient interface {
 	ImageBuild(ctx context.Context, buildContext io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error)
@@ -106,7 +110,10 @@ func defaultHealthCheck(ctx context.Context, port int, path string,
 }
 
 // Promote builds, deploys, health-checks, and cuts over traffic to a new container.
-func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appName, dir string) (*types.PromoteResponse, error) {
+func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appName, dir string, progress ProgressFunc) (*types.PromoteResponse, error) {
+	if progress == nil {
+		progress = func(types.ProgressEvent) {}
+	}
 	lock, err := d.lockManager.Acquire(appName)
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
@@ -120,6 +127,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if err != nil {
 		return nil, fmt.Errorf("parse deploy.yml: %w", err)
 	}
+	progress(types.ProgressEvent{Step: "config", Message: "Loaded deploy config", Status: "done"})
 
 	app, err := state.GetAppByName(d.db, appName)
 	if err != nil {
@@ -160,6 +168,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
  	auditVersion = version
 	imageRef := fmt.Sprintf("%s:%s", appName, version)
 
+	progress(types.ProgressEvent{Step: "build", Message: "Building Docker image...", Status: "running"})
 	dockerfilePath := filepath.Join(dir, cfg.Build.Dockerfile)
 	buildContextDir := filepath.Join(dir, cfg.Build.Context)
 
@@ -177,6 +186,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if err != nil {
 		return nil, fmt.Errorf("build image: %w", err)
 	}
+	progress(types.ProgressEvent{Step: "build", Message: "Build complete", Status: "done"})
 	digest := buildResult.ImageDigest
 
 
@@ -238,6 +248,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		svcPort = cfg.Ports[0].Container
 	}
 
+	progress(types.ProgressEvent{Step: "start", Message: "Starting new container...", Status: "running"})
 	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version, cfg.Resources)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
@@ -254,6 +265,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 			fmt.Sprintf("start container: %v", err))
 		return nil, fmt.Errorf("start container: %w", err)
 	}
+	progress(types.ProgressEvent{Step: "start", Message: "Container started", Status: "done"})
 
 	// 8. Health check new container
 	healthPath := "/"
@@ -283,6 +295,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		retries = cfg.Health.Retries
 	}
 
+	progress(types.ProgressEvent{Step: "health", Message: "Waiting for health check...", Status: "running"})
 	log.Printf("health checking new container %s on port %d...", containerID[:12], hostPort)
 	if err := d.runner.HealthCheck(ctx, containerID, hostPort, healthPath, initialDelay, interval, timeout, retries); err != nil {
 		d.runner.StopContainer(ctx, containerID)
@@ -315,19 +328,24 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		})
 		return nil, fmt.Errorf("health check: %w", err)
 	}
+	progress(types.ProgressEvent{Step: "health", Message: "Health check passed", Status: "done"})
 
+	progress(types.ProgressEvent{Step: "caddy", Message: "Updating Caddy proxy...", Status: "running"})
 	// 9. Update Caddy manager FIRST (new port before old container stops)
 	if d.caddyManager != nil && d.caddyManager.IsRunning() {
 		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
 			return nil, fmt.Errorf("caddy port update: %w", err)
 		}
+		progress(types.ProgressEvent{Step: "caddy", Message: "Caddy updated", Status: "done"})
 	}
 
+	progress(types.ProgressEvent{Step: "cleanup", Message: "Stopping old container...", Status: "running"})
 	// 10. Stop old container and remove it (zero-downtime swap)
 	if oldContainerID != "" {
 		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
 			log.Printf("warning: stop old container %s: %v", oldContainerID[:12], err)
 		}
+		progress(types.ProgressEvent{Step: "cleanup", Message: "Old container stopped", Status: "done"})
 		if err := d.runner.RemoveContainer(ctx, oldContainerID); err != nil {
 			log.Printf("warning: remove old container %s: %v", oldContainerID[:12], err)
 		}

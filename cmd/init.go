@@ -296,36 +296,6 @@ func runInteractiveWizard(db *sql.DB, masterKey []byte) {
 		fmt.Println("Caddy:  not found")
 	}
 
-	// DNS provider setup
-	fmt.Println()
-	fmt.Print("Configure DNS provider? [y/N]: ")
-	var dnsResp string
-	fmt.Scanln(&dnsResp)
-	if strings.EqualFold(dnsResp, "y") || strings.EqualFold(dnsResp, "yes") {
-		fmt.Print("Provider (cloudflare, digitalocean, linode, vultr, hetzner, porkbun): ")
-		var provider string
-		fmt.Scanln(&provider)
-		if provider != "" {
-			state.SetSetting(db, "dns_provider", provider)
-
-			fmt.Print("API token: ")
-			var token string
-			fmt.Scanln(&token)
-			if token != "" {
-				state.EncryptedSetSetting(db, "dns_token", token, masterKey)
-			}
-
-			if provider == "porkbun" {
-				fmt.Print("API secret key: ")
-				var secret string
-				fmt.Scanln(&secret)
-				if secret != "" {
-					state.EncryptedSetSetting(db, "dns_secret", secret, masterKey)
-				}
-			}
-		}
-	}
-
 	// Auto-start
 	fmt.Println()
 	fmt.Print("Enable auto-start on daemon boot? [y/N]: ")
@@ -340,10 +310,9 @@ func runInteractiveWizard(db *sql.DB, masterKey []byte) {
 	fmt.Println("--- Setup Complete ---")
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  1. Create an app:   deploy app create myapp")
+	fmt.Println("  1. Create an app:   deploy up myapp")
 	fmt.Println("  2. Deploy:          deploy up myapp")
 	fmt.Println("  3. Add domains:     deploy domain add myapp example.com")
-	fmt.Println("  4. Sync DNS:        curl -X POST .../dns/sync --data '{ \"ipv4\": \"<server-ip>\" }'")
 	fmt.Println()
 }
 

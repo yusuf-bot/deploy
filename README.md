@@ -23,7 +23,7 @@ Right now we're building for **solo devs first**. Everything works for one perso
 # One command — downloads binary, checks Docker, installs Caddy
 curl -fsSL https://deploy.openexplorer.xyz/install.sh | sh
 
-# Interactive setup wizard (prompts for DNS, auto-start, systemd)
+# Interactive setup wizard (prompts for auto-start, systemd)
 sudo deploy init
 
 # Scaffold deploy.yml + Dockerfile for your project (auto-detects stack)
@@ -33,9 +33,8 @@ deploy scaffold
 # Deploy — builds, health checks, zero-downtime swap
 deploy up myapp
 
-# Add a domain + automatic SSL + DNS sync
+# Add a domain + automatic SSL
 deploy domain add myapp example.com
-deploy domain dns sync myapp
 ```
 
 ## What makes deploy different
@@ -48,7 +47,7 @@ deploy domain dns sync myapp
 
 **Zero-downtime deploys.** Build → start new container on separate port → health check → update Caddy → stop old. Old container never killed until new one is healthy.
 
-**DNS + SSL in one command.** Attach a domain, sync DNS records (6 providers), and Caddy handles Let's Encrypt automatically.
+**SSL in one command.** Attach a domain and Caddy handles Let's Encrypt automatically.
 
 **Encrypted secrets.** AES-256-GCM encrypted at rest, decrypted only at runtime.
 
@@ -61,9 +60,8 @@ deploy domain dns sync myapp
 - `deploy status` — See all apps and their health
 - `deploy logs` — Stream container logs
 
-### Domains & DNS
+### Domains
 - `deploy domain add/rm/ls` — Attach domains to apps
-- `deploy domain dns sync` — Auto-create A/AAAA records (6 providers)
 - Automatic Let's Encrypt SSL via Caddy
 
 ### Secrets
@@ -119,7 +117,6 @@ deploy domain dns sync myapp
 | CI/CD friendly | ✅ | ⚠️ | ❌ | ⚠️ |
 | Secrets mgmt | Built-in AES-256 | Plugin | ❌ | Platform |
 | Audit logs | Built-in | ❌ | ❌ | ❌ |
-| DNS providers | 6 providers | Plugin | ✅ | ❌ |
 | MCP server | Planned | ❌ | ❌ | ❌ |
 | Zero-downtime | ✅ | Plugin | ⚠️ | ✅ |
 | Price | Free (self-host) | Free | Free (self-host) | Usage-based |

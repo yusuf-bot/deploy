@@ -1,9 +1,9 @@
 ---
-title: Domains & DNS
-description: Add custom domains, automatic SSL, and DNS automation.
+title: Domains & SSL
+description: Add custom domains and automatic SSL.
 ---
 
-# Domains & DNS
+# Domains & SSL
 
 ## Adding a Domain
 
@@ -12,46 +12,6 @@ deploy domain add myapp example.com
 ```
 
 This registers the domain with deploy. The next time you run `deploy up`, Caddy will automatically configure reverse proxy and obtain Let's Encrypt SSL certificates.
-
-## DNS Automation
-
-deploy supports 6 DNS providers:
-
-- Cloudflare
-- DigitalOcean
-- Linode
-- Vultr
-- Hetzner
-- Porkbun
-
-### Setup
-
-```bash
-# Configure DNS provider and API token
-deploy config set dns_provider cloudflare
-deploy config set dns_token your-api-token
-
-# For Porkbun (needs secret key):
-deploy config set dns_provider porkbun
-deploy config set dns_token your-api-key
-deploy config set dns_secret your-secret-key
-```
-
-Tokens are encrypted at rest using AES-256-GCM.
-
-### Sync DNS Records
-
-```bash
-# Create A and AAAA records for all domains
-deploy domain dns sync myapp --ipv4 203.0.113.10
-
-# List existing records
-deploy domain dns list myapp
-```
-
-### Zone Extraction
-
-deploy automatically handles zone extraction for subdomains. If you add `blog.example.com` and your zone is `example.com`, deploy discovers this automatically by querying your DNS provider.
 
 ## SSL
 

@@ -232,7 +232,7 @@ func TestPromoteSuccess(t *testing.T) {
 	}
 
 	// Promote should succeed, replacing old container
-	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir)
+	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
 	if err != nil {
 		t.Fatalf("Promote: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestPromoteWithSecrets(t *testing.T) {
 	}
 
 	// Promote
-	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir)
+	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
 	if err != nil {
 		t.Fatalf("Promote: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestPromoteBuildFailure(t *testing.T) {
 
 	mocks.docker.shouldFail["build"] = fmt.Errorf("build failed")
 
-	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir)
+	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
 	if err == nil {
 		t.Fatal("expected error for build failure")
 	}
@@ -320,7 +320,7 @@ func TestPromoteHealthCheckFailure(t *testing.T) {
 	// Make the runner's HealthCheck fail for any container
 	mocks.runner.ShouldFail["HealthCheck"] = fmt.Errorf("health check failed")
 
-	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir)
+	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
 	if err == nil {
 		t.Fatal("expected error for health check failure")
 	}
@@ -364,7 +364,7 @@ func TestPromoteAppNotFound(t *testing.T) {
 	mocks, _ := setupDeployTest(t)
 	dep := newTestDeployer(mocks)
 
-	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "nonexistent", ".")
+	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "nonexistent", ".", nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent app")
 	}

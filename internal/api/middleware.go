@@ -20,6 +20,17 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher for SSE streaming support via the embedded
+// ResponseWriter. Without this, the Flusher interface check in handlers
+// that use SSE (e.g., handlePromote) would fail because Go only promotes
+// methods declared on the embedded interface type, not methods on the
+// concrete value behind the interface.
+func (lrw *loggingResponseWriter) Flush() {
+	if f, ok := lrw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // loggingMiddleware wraps an http.Handler with request logging.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

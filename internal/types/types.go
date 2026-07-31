@@ -373,3 +373,10 @@ type ListDomainsResponse struct {
 type RemoveAppResponse struct {
 	Message string `json:"message"`
 }
+
+// ProgressEvent is a streaming progress event for long-running operations.
+type ProgressEvent struct {
+	Step    string `json:"step"`
+	Message string `json:"message"`
+	Status  string `json:"status"` // "running", "done", "error"
+}

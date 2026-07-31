@@ -49,7 +49,7 @@ jobs:
           script: |
             cd /path/to/app
             git pull
-            deploy promote --wait .
+            deploy promote --dir .
 ```
 
 ## GitLab CI
@@ -68,7 +68,7 @@ deploy:
     - ssh $DEPLOY_USER@$DEPLOY_HOST "
         cd /path/to/app &&
         git pull &&
-        deploy promote --wait .
+        deploy promote --dir .
       "
   only:
     - main

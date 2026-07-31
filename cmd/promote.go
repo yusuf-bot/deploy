@@ -3,7 +3,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+
+	"deploy/internal/types"
 
 	"deploy/internal/config"
 
@@ -17,6 +20,7 @@ var promoteCmd = &cobra.Command{
 	Short: "Promote a new deployment",
 	Long:  `Build and deploy a new version. App name can come from deploy.yml or be provided as argument.`,
 	Args:  cobra.MaximumNArgs(1),
+	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		appName := ""
 		if len(args) > 0 {
@@ -35,7 +39,6 @@ var promoteCmd = &cobra.Command{
 			}
 		}
 
-		wait := waitFlag
 
 		absDir, err := filepath.Abs(promoteDir)
 		if err != nil {
@@ -43,7 +46,25 @@ var promoteCmd = &cobra.Command{
 		}
 
 		c := newClient()
-		resp, err := c.Promote(appName, absDir, wait)
+		var resp *types.PromoteResponse
+
+		if waitFlag {
+			resp, err = c.PromoteStream(appName, absDir, func(evt types.ProgressEvent) {
+				icon := " ▶"
+				switch evt.Status {
+				case "done":
+					icon = " ✓"
+				case "error":
+					icon = " ✗"
+				}
+				if evt.Message != "" {
+					fmt.Fprintf(os.Stderr, "%s %s\n", icon, evt.Message)
+				}
+			})
+		} else {
+			resp, err = c.Promote(appName, absDir, false)
+		}
+
 		if err != nil {
 			return fmt.Errorf("promote: %w", err)
 		}

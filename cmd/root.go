@@ -6,9 +6,7 @@ import (
 	"strings"
 
 	"deploy/internal/client"
-	_ "deploy/internal/dns/providers"
 	"deploy/internal/config"
-	"deploy/cmd/app"
 
 	"github.com/spf13/cobra"
 )
@@ -56,9 +54,6 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&jsonFlag, "json", "j", false, "Output in JSON format")
 	rootCmd.PersistentFlags().BoolVar(&waitFlag, "wait", true, "Wait for operation to complete")
 	rootCmd.PersistentFlags().BoolVar(&asyncFlag, "async", false, "Run operation asynchronously")
-
-	rootCmd.AddCommand(app.Cmd)
-
 	var versionCmd = &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
