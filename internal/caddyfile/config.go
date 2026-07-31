@@ -16,6 +16,10 @@ import (
 func MainCaddyfile() string {
 	return `{
     admin off
+    auto_https off
+    servers {
+        protocols h1 h2
+    }
 }
 
 # Site snippets

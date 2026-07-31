@@ -313,9 +313,6 @@ func (m *CaddyManager) restartWithBackoff() {
 	}
 
 	log.Printf("caddy restarted successfully (attempt %d/%d)", myAttempt, maxAttempts)
-	return
-
-	log.Printf("caddy failed to restart after %d attempts, giving up", maxAttempts)
 }
 
 // WaitForReady polls IsRunning until the process is alive or the timeout expires.
@@ -441,7 +438,7 @@ func (m *CaddyManager) AddDomainSnippet(appName string, domain string, port int)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	snippet := generateAppSnippet(appName, port, []string{domain})
+	snippet := m.generateAppSnippet(appName, port, []string{domain})
 	filename := SiteFilename(appName, domain)
 	path := filepath.Join(m.sitesDir(), filename)
 
@@ -550,7 +547,7 @@ func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int
 
 	// Regenerate each domain snippet with the new port
 	for _, d := range domains {
-		snippet := generateAppSnippet(app.Name, newPort, []string{d.Domain})
+		snippet := m.generateAppSnippet(app.Name, newPort, []string{d.Domain})
 		filename := SiteFilename(app.Name, d.Domain)
 		path := filepath.Join(m.sitesDir(), filename)
 		if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
@@ -590,7 +587,7 @@ func (m *CaddyManager) generateSnippets() error {
 			expected[filename] = true
 
 			path := filepath.Join(m.sitesDir(), filename)
-			snippet := generateAppSnippet(app.Name, app.Port, []string{d.Domain})
+			snippet := m.generateAppSnippet(app.Name, app.Port, []string{d.Domain})
 			if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
 				return fmt.Errorf("create sites dir: %w", err)
 			}
@@ -635,24 +632,65 @@ func isProcessAlive(pid int) bool {
 }
 // appSnippetTemplate is the Go template for generating a Caddyfile snippet
 // for an app with multiple domains.
+//
+// Public domains get two blocks: an http:// block (port 80, for Cloudflare
+// Flexible mode) and a plain domain block (port 443, for Full/Strict mode)
+// whose tls line (computed in Go, not here) points at the origin cert so
+// daemon restarts don't clobber a manually-added tls line. They must be
+// separate blocks: caddy rejects a tls directive in a combined
+// "http://d, d { ... }" block ("server listening on [:80] is HTTP, but
+// attempts to configure TLS connection policies"). Localhost domains keep a
+// single block with tls internal.
 const appSnippetTemplate = `# deploy: {{.AppName}}
-{{range .Domains}}{{.}} {
-    reverse_proxy localhost:{{.Port}}
+{{range .Domains}}{{if .IsLocal}}{{.Name}} {
+    tls internal
+    reverse_proxy localhost:{{$.Port}}
 }
-{{end}}`
+{{else}}http://{{.Name}} {
+    reverse_proxy localhost:{{$.Port}}
+}
+{{.Name}} {
+{{if .TLSLine}}    {{.TLSLine}}
+{{end}}    reverse_proxy localhost:{{$.Port}}
+}
+{{end}}{{end}}`
+
+// domainEntry carries per-domain data used by appSnippetTemplate.
+type domainEntry struct {
+	Name    string
+	IsLocal bool
+	TLSLine string
+}
 
 type appSnippetData struct {
 	AppName string
 	Port    int
-	Domains []string
+	Domains []domainEntry
 }
 
 // generateAppSnippet generates a Caddyfile site snippet for an app's domains
 // using a proper Go template. Replaces the old strings.ReplaceAll approach
 // which could corrupt content.
-func generateAppSnippet(appName string, port int, domains []string) string {
+//
+// For non-localhost domains the TLSLine is set to the origin cert pair
+// (configDir/certs/origin.{pem,key}) only when both files exist.
+func (m *CaddyManager) generateAppSnippet(appName string, port int, domains []string) string {
+	entries := make([]domainEntry, 0, len(domains))
+	for _, d := range domains {
+		entry := domainEntry{Name: d, IsLocal: IsLocalDomain(d)}
+		if !entry.IsLocal {
+			certPath := filepath.Join(m.configDir, "certs", "origin.pem")
+			keyPath := filepath.Join(m.configDir, "certs", "origin.key")
+			if _, err := os.Stat(certPath); err == nil {
+				if _, err := os.Stat(keyPath); err == nil {
+					entry.TLSLine = fmt.Sprintf("tls %s %s", certPath, keyPath)
+				}
+			}
+		}
+		entries = append(entries, entry)
+	}
 	tmpl := template.Must(template.New("app").Parse(appSnippetTemplate))
 	var buf bytes.Buffer
-	tmpl.Execute(&buf, appSnippetData{AppName: appName, Port: port, Domains: domains})
+	tmpl.Execute(&buf, appSnippetData{AppName: appName, Port: port, Domains: entries})
 	return buf.String()
 }

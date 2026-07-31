@@ -66,6 +66,9 @@ func TestMainCaddyfileContent(t *testing.T) {
 	if !strings.Contains(content, "import sites/*.conf") {
 		t.Error("expected 'import sites/*.conf' in main Caddyfile")
 	}
+	if !strings.Contains(content, "protocols h1 h2") {
+		t.Error("expected 'protocols h1 h2' in main Caddyfile")
+	}
 }
 
 // TestSiteBlockPublicDomain tests SiteBlock for a public domain.
@@ -172,8 +175,11 @@ func TestAddDomainSnippet(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "testapp.example.com") {
-		t.Error("expected domain in snippet content")
+	if !strings.Contains(content, "http://testapp.example.com {") {
+		t.Error("expected http listener block for domain")
+	}
+	if !strings.Contains(content, "testapp.example.com {") {
+		t.Error("expected https listener block for domain")
 	}
 	if !strings.Contains(content, "localhost:8080") {
 		t.Error("expected port in snippet content")
@@ -373,8 +379,11 @@ func TestGenerateSnippetsFromDB(t *testing.T) {
 		content := string(data)
 
 		if strings.Contains(e.Name(), "alpha") {
-			if !strings.Contains(content, "alpha.example.com") {
-				t.Error("expected alpha domain")
+			if !strings.Contains(content, "http://alpha.example.com {") {
+				t.Error("expected http listener block for alpha")
+			}
+			if !strings.Contains(content, "alpha.example.com {") {
+				t.Error("expected https listener block for alpha")
 			}
 			if !strings.Contains(content, "localhost:8080") {
 				t.Error("expected alpha port 8080")
@@ -769,5 +778,67 @@ exit 1
 
 	if mgr.IsRunning() {
 		t.Fatal("expected Caddy to remain stopped after Stop() during crash loop")
+	}
+}
+
+// TestGenerateAppSnippetWithCerts tests that public domains get an http://
+// listener plus a tls line pointing at the origin cert pair when both cert
+// files exist, while localhost domains keep tls internal without the http://
+// prefix.
+func TestGenerateAppSnippetWithCerts(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	certDir := filepath.Join(tmpDir, "certs")
+	if err := os.MkdirAll(certDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	certPath := filepath.Join(certDir, "origin.pem")
+	keyPath := filepath.Join(certDir, "origin.key")
+	if err := os.WriteFile(certPath, []byte("cert"), 0600); err != nil {
+		t.Fatalf("WriteFile cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+
+	mgr := NewCaddyManager(nil, tmpDir)
+	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com", "dev.localhost"})
+
+	want := "# deploy: myapp\n" +
+		"http://example.com {\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n" +
+		"example.com {\n" +
+		"    tls " + certPath + " " + keyPath + "\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n" +
+		"dev.localhost {\n" +
+		"    tls internal\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n"
+
+	if snippet != want {
+		t.Errorf("snippet mismatch:\ngot:\n%s\nwant:\n%s", snippet, want)
+	}
+}
+
+// TestGenerateAppSnippetNoCerts tests that public domains omit the tls line
+// when no origin cert files exist, but still get the dual http/https listener.
+func TestGenerateAppSnippetNoCerts(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewCaddyManager(nil, tmpDir)
+
+	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com"})
+
+	want := "# deploy: myapp\n" +
+		"http://example.com {\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n" +
+		"example.com {\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n"
+
+	if snippet != want {
+		t.Errorf("snippet mismatch:\ngot:\n%s\nwant:\n%s", snippet, want)
 	}
 }
