@@ -14,8 +14,10 @@ import (
 func scanDomainRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (types.Domain, error) {
-	var id, appID, domain, createdAt, updatedAt string
-	err := scanner.Scan(&id, &appID, &domain, &createdAt, &updatedAt)
+	var id, appID, domain string
+	var httpOnly int64
+	var createdAt, updatedAt string
+	err := scanner.Scan(&id, &appID, &domain, &httpOnly, &createdAt, &updatedAt)
 	if err != nil {
 		return types.Domain{}, err
 	}
@@ -23,6 +25,7 @@ func scanDomainRow(scanner interface {
 		ID:        id,
 		AppID:     appID,
 		Domain:    domain,
+		HTTPOnly:  httpOnly != 0,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
 	}, nil
@@ -39,10 +42,14 @@ func CreateDomain(db *sql.DB, domain *types.Domain) error {
 	domain.CreatedAt = now
 	domain.UpdatedAt = now
 
+	httpOnly := 0
+	if domain.HTTPOnly {
+		httpOnly = 1
+	}
 	_, err := db.Exec(
-		`INSERT INTO domains (id, app_id, domain, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		domain.ID, domain.AppID, domain.Domain, now, now,
+		`INSERT INTO domains (id, app_id, domain, http_only, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		domain.ID, domain.AppID, domain.Domain, httpOnly, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create domain: %w", err)
@@ -53,7 +60,7 @@ func CreateDomain(db *sql.DB, domain *types.Domain) error {
 // GetDomain retrieves a domain by its ID.
 func GetDomain(db *sql.DB, id string) (*types.Domain, error) {
 	row := db.QueryRow(
-		`SELECT id, app_id, domain, created_at, updated_at
+		`SELECT id, app_id, domain, http_only, created_at, updated_at
 		 FROM domains WHERE id = ?`, id,
 	)
 	d, err := scanDomainRow(row)
@@ -69,7 +76,7 @@ func GetDomain(db *sql.DB, id string) (*types.Domain, error) {
 // GetDomainByDomain retrieves a domain by its domain name.
 func GetDomainByDomain(db *sql.DB, domain string) (*types.Domain, error) {
 	row := db.QueryRow(
-		`SELECT id, app_id, domain, created_at, updated_at
+		`SELECT id, app_id, domain, http_only, created_at, updated_at
 		 FROM domains WHERE domain = ?`, domain,
 	)
 	d, err := scanDomainRow(row)
@@ -85,7 +92,7 @@ func GetDomainByDomain(db *sql.DB, domain string) (*types.Domain, error) {
 // ListDomains retrieves all domains.
 func ListDomains(db *sql.DB) ([]*types.Domain, error) {
 	rows, err := db.Query(
-		`SELECT id, app_id, domain, created_at, updated_at
+		`SELECT id, app_id, domain, http_only, created_at, updated_at
 		 FROM domains ORDER BY domain`,
 	)
 	if err != nil {
@@ -107,7 +114,7 @@ func ListDomains(db *sql.DB) ([]*types.Domain, error) {
 // ListDomainsByApp retrieves all domains for a specific app.
 func ListDomainsByApp(db *sql.DB, appID string) ([]*types.Domain, error) {
 	rows, err := db.Query(
-		`SELECT id, app_id, domain, created_at, updated_at
+		`SELECT id, app_id, domain, http_only, created_at, updated_at
 		 FROM domains WHERE app_id = ? ORDER BY domain`, appID,
 	)
 	if err != nil {

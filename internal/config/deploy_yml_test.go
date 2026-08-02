@@ -258,3 +258,38 @@ func TestDetectStackDirNotExist(t *testing.T) {
 		t.Errorf("expected unknown for missing dir, got %s", stack)
 	}
 }
+
+func TestLoadDeployConfigNetwork(t *testing.T) {
+	yaml := `
+app: myapp
+network: openxpert_default
+ports:
+  - container: 8000
+    host: 0
+`
+	path := writeTempYAML(t, yaml)
+	cfg, err := LoadDeployConfig(path)
+	if err != nil {
+		t.Fatalf("LoadDeployConfig: %v", err)
+	}
+	if cfg.Network != "openxpert_default" {
+		t.Errorf("expected network openxpert_default, got %q", cfg.Network)
+	}
+}
+
+func TestLoadDeployConfigNoNetworkDefaultsEmpty(t *testing.T) {
+	yaml := `
+app: myapp
+ports:
+  - container: 8000
+    host: 0
+`
+	path := writeTempYAML(t, yaml)
+	cfg, err := LoadDeployConfig(path)
+	if err != nil {
+		t.Fatalf("LoadDeployConfig: %v", err)
+	}
+	if cfg.Network != "" {
+		t.Errorf("expected empty network, got %q", cfg.Network)
+	}
+}

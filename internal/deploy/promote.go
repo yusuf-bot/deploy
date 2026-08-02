@@ -153,6 +153,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 			Port:   hostPort,
 			Image:  appName + ":latest",
 			Env:    cfg.Env,
+			Network: cfg.Network,
 		}
 		if _, createErr := state.CreateApp(d.db, newApp); createErr != nil {
 			return nil, fmt.Errorf("create app %q: %w", appName, createErr)
@@ -249,7 +250,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 
 	progress(types.ProgressEvent{Step: "start", Message: "Starting new container...", Status: "running"})
-	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version, cfg.Resources)
+	containerID, err := d.createPromoteContainer(ctx, app, buildResult.ImageRef, mergedEnv, hostPort, svcPort, version, cfg.Resources, cfg.Network)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))
@@ -389,7 +390,8 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	// Register domains from deploy.yml
 	if d.caddyManager != nil && d.caddyManager.IsRunning() {
 		for _, domain := range cfg.Domains {
-			if err := d.caddyManager.AddDomainSnippet(appName, domain, hostPort); err != nil {
+			// Domains from deploy.yml use the cert-based path (httpOnly=false).
+			if err := d.caddyManager.AddDomainSnippet(appName, domain, hostPort, false); err != nil {
 				log.Printf("warning: failed to register domain %s: %v", domain, err)
 			}
 		}
@@ -424,7 +426,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 // buildResult holds the result of a successful image build.
 
 // createPromoteContainer sets up the container config for a new deployment.
-func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int, version string, resources types.ResourceConfig) (string, error) {
+func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, imageRef string, env []string, hostPort, svcPort int, version string, resources types.ResourceConfig, network string) (string, error) {
 	// Convert []string env (KEY=VALUE) to map[string]string for the app object
 	envMap := make(map[string]string, len(env))
 	for _, e := range env {
@@ -440,6 +442,7 @@ func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, i
 		ServicePort: svcPort,
 		Image: imageRef,
 		Env:   envMap,
+		Network: network,
 	}
 	if resources.Memory != "" || resources.CPUs != "" {
 		r := resources

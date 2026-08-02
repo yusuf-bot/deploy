@@ -35,6 +35,7 @@ type mockAppData struct {
 	Env   map[string]string
 	Dev   bool
 	Version string
+	Network string
 }
 
 // NewMockDocker creates a new MockDocker.
@@ -89,6 +90,7 @@ func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App, versio
 			Env:   app.Env,
 			Dev:   app.Dev,
 			Version: version,
+			Network: app.Network,
 		},
 		Running: false,
 		Logs:    "",

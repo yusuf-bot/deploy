@@ -256,6 +256,69 @@ func TestPromoteSuccess(t *testing.T) {
 	}
 }
 
+func TestPromotePassesNetworkToContainer(t *testing.T) {
+	mocks, appDir := setupDeployTest(t)
+	dep := newTestDeployer(mocks)
+
+	// Rewrite deploy.yml to request a custom docker network
+	deployYML := fmt.Sprintf(`app: %s
+stack: dockerfile
+build:
+  context: .
+  dockerfile: Dockerfile
+network: testnet
+health:
+  path: /health
+ports:
+  - container: 80
+    host: 8081
+`, "test-app")
+	if err := os.WriteFile(filepath.Join(appDir, "deploy.yml"), []byte(deployYML), 0644); err != nil {
+		t.Fatalf("rewrite deploy.yml: %v", err)
+	}
+
+	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if resp == nil || resp.NewContainerID == "" {
+		t.Fatal("expected non-empty container ID")
+	}
+
+	mocks.runner.Mu.Lock()
+	defer mocks.runner.Mu.Unlock()
+	c, ok := mocks.runner.Containers[resp.NewContainerID]
+	if !ok {
+		t.Fatalf("container %s not found in mock", resp.NewContainerID)
+	}
+	if c.App.Network != "testnet" {
+		t.Errorf("expected network testnet, got %q", c.App.Network)
+	}
+}
+
+func TestPromoteNoNetworkLeavesEmpty(t *testing.T) {
+	mocks, appDir := setupDeployTest(t)
+	dep := newTestDeployer(mocks)
+
+	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if resp == nil || resp.NewContainerID == "" {
+		t.Fatal("expected non-empty container ID")
+	}
+
+	mocks.runner.Mu.Lock()
+	defer mocks.runner.Mu.Unlock()
+	c, ok := mocks.runner.Containers[resp.NewContainerID]
+	if !ok {
+		t.Fatalf("container %s not found in mock", resp.NewContainerID)
+	}
+	if c.App.Network != "" {
+		t.Errorf("expected empty network, got %q", c.App.Network)
+	}
+}
+
 func TestPromoteWithSecrets(t *testing.T) {
 	mocks, appDir := setupDeployTest(t)
 	dep := newTestDeployer(mocks)

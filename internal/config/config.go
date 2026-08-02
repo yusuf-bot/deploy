@@ -49,8 +49,12 @@ func HomeDir() string {
 }
 
 // DeployDir returns the path to the deploy data directory.
-// Uses DEPLOY_HOME env var if set, otherwise ~/.deploy/.
+// Uses DEPLOY_DATA_DIR env var if set, falling back to the legacy
+// DEPLOY_HOME env var, otherwise ~/.deploy/.
 func DeployDirPath() string {
+	if d := os.Getenv("DEPLOY_DATA_DIR"); d != "" {
+		return d
+	}
 	if d := os.Getenv("DEPLOY_HOME"); d != "" {
 		return d
 	}

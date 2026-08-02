@@ -24,17 +24,24 @@ func AllocatePort(db *sql.DB, appName string, checkPortInUse func(int) (bool, er
 		return existingPort, nil // App already has a port, reuse it
 	}
 
-	// Find first available port
-	for port := portRangeStart; port <= portRangeEnd; port++ {
+	// Find first available port. The promote flow stages new containers on
+	// port+1 (blue/green), so both the base port AND its successor must be
+	// free — otherwise a just-allocated base would collide with the app that
+	// already owns port+1 (e.g. an app that was promoted to final port P+1).
+	for port := portRangeStart; port < portRangeEnd; port++ {
 		// Check DB
 		var count int
-		tx.QueryRow("SELECT COUNT(*) FROM port_allocations WHERE port = ?", port).Scan(&count)
+		tx.QueryRow("SELECT COUNT(*) FROM port_allocations WHERE port IN (?, ?)", port, port+1).Scan(&count)
 		if count > 0 {
 			continue
 		}
 		// Check Docker
 		if checkPortInUse != nil {
 			inUse, err := checkPortInUse(port)
+			if err != nil || inUse {
+				continue
+			}
+			inUse, err = checkPortInUse(port + 1)
 			if err != nil || inUse {
 				continue
 			}

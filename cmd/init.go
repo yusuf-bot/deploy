@@ -37,7 +37,7 @@ If run as root, also sets up a systemd service (use --no-systemd to skip).`,
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
 			usr, err := user.Lookup(sudoUser)
 			if err == nil {
-				os.Setenv("DEPLOY_HOME", usr.HomeDir+"/.deploy")
+				os.Setenv("DEPLOY_HOME", filepath.Join(usr.HomeDir, config.DeployDir))
 			}
 		}
 		if err := config.InitDir(); err != nil {
@@ -254,7 +254,7 @@ ExecStartPost=/bin/chmod 0770 /var/run/deploy/deploy.sock
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
-Environment=DEPLOY_HOME=%s/.deploy
+Environment=DEPLOY_DATA_DIR=%s/.deploy
 
 [Install]
 WantedBy=multi-user.target

@@ -155,7 +155,7 @@ func TestAddDomainSnippet(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewCaddyManager(db, tmpDir)
 
-	if err := mgr.AddDomainSnippet("test-app", "testapp.example.com", 8080); err != nil {
+	if err := mgr.AddDomainSnippet("test-app", "testapp.example.com", 8080, false); err != nil {
 		t.Fatalf("AddDomainSnippet: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestRemoveDomainSnippet(t *testing.T) {
 	mgr := NewCaddyManager(db, tmpDir)
 
 	// Add first
-	if err := mgr.AddDomainSnippet("test-app", "remove.example.com", 8080); err != nil {
+	if err := mgr.AddDomainSnippet("test-app", "remove.example.com", 8080, false); err != nil {
 		t.Fatalf("AddDomainSnippet: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestUpdatePortSnippets(t *testing.T) {
 	mgr := NewCaddyManager(db, tmpDir)
 
 	// Add snippet with port 8080
-	if err := mgr.AddDomainSnippet("port-app", "portapp.example.com", 8080); err != nil {
+	if err := mgr.AddDomainSnippet("port-app", "portapp.example.com", 8080, false); err != nil {
 		t.Fatalf("AddDomainSnippet: %v", err)
 	}
 
@@ -306,16 +306,18 @@ while [ 1 ]; do sleep 1; done
 	}
 }
 
-// TestReloadSendsSIGHUP tests that Reload sends SIGHUP to the process.
-func TestReloadSendsSIGHUP(t *testing.T) {
+// TestReloadRestartsProcess verifies that Reload restarts the Caddy process
+// with a fresh PID so it re-reads the freshly generated config. Caddy ignores
+// SIGHUP, so a restart (via the explicit --config flag in startProcess) is
+// how config changes are actually applied.
+func TestReloadRestartsProcess(t *testing.T) {
 	db := setupTestDB(t)
 	tmpDir := t.TempDir()
 
-	// Create a fake caddy script that traps SIGHUP and writes a marker file.
-	// Use a longer sleep to give the signal time to be delivered.
-	markerFile := filepath.Join(tmpDir, "hup-received")
-	fakeCaddy := filepath.Join(tmpDir, "fake-caddy-hup.sh")
-	script := "#!/bin/sh\n# Fake caddy that records SIGHUP\ntrap 'touch " + markerFile + "' 1\necho \"Caddy starting\"\nwhile [ 1 ]; do sleep 1; done\n"
+	// Fake caddy that records each instance's PID.
+	pidFile := filepath.Join(tmpDir, "caddy-pids")
+	fakeCaddy := filepath.Join(tmpDir, "fake-caddy-restart.sh")
+	script := "#!/bin/sh\n# Fake caddy that records each instance's PID\necho \"Caddy starting\"\necho $$ >> " + pidFile + "\nwhile [ 1 ]; do sleep 1; done\n"
 	if err := os.WriteFile(fakeCaddy, []byte(script), 0755); err != nil {
 		t.Fatalf("WriteFile fake caddy: %v", err)
 	}
@@ -328,20 +330,45 @@ func TestReloadSendsSIGHUP(t *testing.T) {
 	}
 	defer mgr.Stop()
 
-	// Reload should send SIGHUP
+	// Wait for the first instance to record its PID.
+	waitForPIDCount(t, pidFile, 1)
+
 	if err := mgr.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	// Wait generously for the signal to be processed in the shell script
-	for i := 0; i < 20; i++ {
-		if _, err := os.Stat(markerFile); err == nil {
-			return // SIGHUP received
-		}
-		time.Sleep(100 * time.Millisecond)
+	// Reload must start a brand-new process (new PID) with the fresh config.
+	waitForPIDCount(t, pidFile, 2)
+	pids := readPIDFile(t, pidFile)
+	if pids[0] == pids[1] {
+		t.Fatalf("expected Reload to restart caddy with a new PID, got %s both times", pids[0])
 	}
+}
 
-	t.Fatal("expected SIGHUP to be received (marker file not found after 2s)")
+// waitForPIDCount polls the pidfile until it contains at least n entries.
+func waitForPIDCount(t *testing.T, path string, n int) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		if len(readPIDFile(t, path)) >= n {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected pidfile %s to contain %d entries within timeout", path, n)
+}
+
+// readPIDFile reads the pidfile into a slice of PID strings.
+// Returns nil while the file does not exist yet.
+func readPIDFile(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("ReadFile pidfile: %v", err)
+	}
+	return strings.Fields(string(data))
 }
 
 // TestGenerateSnippetsFromDB tests that generateSnippets creates files for running apps with domains.
@@ -802,7 +829,7 @@ func TestGenerateAppSnippetWithCerts(t *testing.T) {
 	}
 
 	mgr := NewCaddyManager(nil, tmpDir)
-	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com", "dev.localhost"})
+	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com", "dev.localhost"}, nil)
 
 	want := "# deploy: myapp\n" +
 		"http://example.com {\n" +
@@ -828,7 +855,7 @@ func TestGenerateAppSnippetNoCerts(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewCaddyManager(nil, tmpDir)
 
-	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com"})
+	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com"}, nil)
 
 	want := "# deploy: myapp\n" +
 		"http://example.com {\n" +
@@ -840,5 +867,44 @@ func TestGenerateAppSnippetNoCerts(t *testing.T) {
 
 	if snippet != want {
 		t.Errorf("snippet mismatch:\ngot:\n%s\nwant:\n%s", snippet, want)
+	}
+}
+
+
+// TestGenerateAppSnippetHTTPOnly tests that an http-only domain emits ONLY the
+// http:// listener block — no TLS/https block — even when origin certs exist.
+func TestGenerateAppSnippetHTTPOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	certDir := filepath.Join(tmpDir, "certs")
+	if err := os.MkdirAll(certDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	certPath := filepath.Join(certDir, "origin.pem")
+	keyPath := filepath.Join(certDir, "origin.key")
+	if err := os.WriteFile(certPath, []byte("cert"), 0600); err != nil {
+		t.Fatalf("WriteFile cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+
+	mgr := NewCaddyManager(nil, tmpDir)
+	snippet := mgr.generateAppSnippet("myapp", 12345, []string{"example.com"}, map[string]bool{"example.com": true})
+
+	want := "# deploy: myapp\n" +
+		"http://example.com {\n" +
+		"    reverse_proxy localhost:12345\n" +
+		"}\n"
+
+	if snippet != want {
+		t.Errorf("snippet mismatch:\ngot:\n%s\nwant:\n%s", snippet, want)
+	}
+	if strings.Contains(snippet, "tls ") {
+		t.Errorf("expected no tls line in http-only snippet, got:\n%s", snippet)
+	}
+	// Only the http:// block may exist — no bare (https) block for example.com.
+	if strings.Contains(snippet, "\nexample.com {") {
+		t.Errorf("expected no bare https block in http-only snippet, got:\n%s", snippet)
 	}
 }

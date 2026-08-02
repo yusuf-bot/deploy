@@ -1,6 +1,7 @@
 package caddyfile
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -9,10 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"sync"
-	"bytes"
 	"syscall"
+	"text/template"
 	"time"
 
 	"deploy/internal/state"
@@ -38,29 +38,31 @@ const (
 //
 // Caddy runs as a subprocess (not embedded). The daemon writes snippet files
 // to configDir/sites/*.conf, and the main Caddyfile imports them via a glob
-// pattern. On changes, the daemon updates the snippets and sends SIGHUP to
-// trigger a config reload.
+// pattern. On changes, the daemon updates the snippets and restarts the Caddy
+// subprocess so it re-reads the freshly generated Caddyfile.
 //
 // Crash detection: a watcher goroutine waits for cmd.Wait() and restarts
 // the process with exponential backoff on unexpected exits. Stop() closes
 // stopCh to prevent the restart loop during intentional shutdown.
 type CaddyManager struct {
 	db        *sql.DB
-	configDir string     // ~/.deploy/caddy
-	caddyBin  string     // path to caddy binary (default "caddy")
-	cmd       *exec.Cmd  // running caddy process
+	configDir string    // ~/.deploy/caddy
+	caddyBin  string    // path to caddy binary (default "caddy")
+	cmd       *exec.Cmd // running caddy process
 	mu        sync.Mutex
 	running   bool
 	cancel    context.CancelFunc
 
 	// Crash detection and restart
-	stopCh   chan struct{} // closed by Stop() to signal watcher to not restart
-	stopOnce sync.Once     // ensures stopCh is closed at most once
-	exitedCh chan struct{} // closed by watcher when cmd.Wait() returns (recreated per start)
+	stopCh      chan struct{} // closed by Stop() to signal watcher to not restart
+	stopOnce    sync.Once     // ensures stopCh is closed at most once
+	exitedCh    chan struct{} // closed by watcher when cmd.Wait() returns (recreated per start)
+	watcherDone chan struct{} // closed by watcher when it fully returns (recreated per start)
+	restarting  bool          // true while a deliberate reload restart is in progress
 
 	// Restart configuration (exported for testing)
 	// Total restart attempts across crash cycles
-	restartAttempts int
+	restartAttempts    int
 	RestartMaxAttempts int
 	RestartBackoff     time.Duration
 	RestartMaxBackoff  time.Duration
@@ -199,39 +201,37 @@ func (m *CaddyManager) startProcess() error {
 	}
 
 	exitedCh := make(chan struct{})
+	watcherDone := make(chan struct{})
 	m.cmd = cmd
 	m.running = true
 	m.cancel = cancel
 	m.exitedCh = exitedCh
+	m.watcherDone = watcherDone
 
-	// 6. Verify process started (brief wait + check)
-	// Verify process started (goroutine + channel)
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
+	// 6. Launch the crash watcher immediately. It is the ONLY caller of
+	// cmd.Wait(), so there is no race with a second Wait on the same Cmd
+	// (a second Wait can hang even after the process exits).
+	go m.watchProcess(exitedCh, watcherDone, cmd)
+
+	// 7. Verify the process started: wait briefly. If it exits immediately,
+	// the watcher detects the crash and restarts it with backoff, so
+	// startup failures are covered by crash detection.
 	select {
-	case err := <-waitCh:
-		m.running = false
-		m.cancel = nil
-		m.cmd = nil
-		m.exitedCh = nil
-		cancel()
-		close(exitedCh)
-		return fmt.Errorf("caddy exited immediately: %w", err)
+	case <-exitedCh:
+		// Process exited during startup — the watcher handles the restart.
+		log.Printf("caddy exited during startup (crash watcher will restart)")
 	case <-time.After(100 * time.Millisecond):
-		// Still alive
+		// Still alive.
 	}
-
-	// 7. Launch crash watcher goroutine
-	go m.watchProcess(exitedCh, cmd)
 
 	return nil
 }
 
 // watchProcess waits for the caddy process to exit. If the exit is unexpected
 // (not triggered by Stop()), it restarts the process with exponential backoff.
-func (m *CaddyManager) watchProcess(exitedCh chan struct{}, cmd *exec.Cmd) {
+func (m *CaddyManager) watchProcess(exitedCh chan struct{}, watcherDone chan struct{}, cmd *exec.Cmd) {
+	defer close(watcherDone)
+
 	// Wait for process to exit
 	err := cmd.Wait()
 
@@ -244,7 +244,14 @@ func (m *CaddyManager) watchProcess(exitedCh chan struct{}, cmd *exec.Cmd) {
 		m.running = false
 		m.cmd = nil
 	}
+	restarting := m.restarting
 	m.mu.Unlock()
+
+	// A deliberate reload restart is in progress — the manager starts the
+	// replacement itself, so don't crash-restart here.
+	if restarting {
+		return
+	}
 
 	// Check if stop was requested — if so, don't restart
 	select {
@@ -394,14 +401,16 @@ func (m *CaddyManager) Stop() error {
 	}
 	m.running = false
 	m.cmd = nil
+	m.watcherDone = nil
 	m.mu.Unlock()
 
 	log.Printf("Caddy stopped")
 	return nil
 }
 
-// Reload regenerates all site snippets from the current DB state and sends
-// SIGHUP to Caddy to reload the configuration.
+// Reload regenerates all site snippets from the current DB state and restarts
+// Caddy so it re-reads the fresh Caddyfile. Caddy ignores SIGHUP, so a
+// restart with the explicit --config flag is the only reliable reload.
 func (m *CaddyManager) Reload() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -410,11 +419,58 @@ func (m *CaddyManager) Reload() error {
 		return fmt.Errorf("regenerate snippets: %w", err)
 	}
 
-	if m.running && m.cmd != nil && m.cmd.Process != nil {
-		return m.cmd.Process.Signal(syscall.SIGHUP)
+	return m.restartLocked()
+}
+
+// restartLocked restarts the running Caddy subprocess so it re-reads the
+// freshly written Caddyfile and site snippets (imported via sites/*.conf).
+//
+// Caller must hold m.mu. The lock is released while waiting for the old
+// process to exit (the crash watcher needs it to finish its cleanup) and
+// re-acquired before starting the replacement. Returns nil when Caddy is not
+// currently running — the snippet files are already written, and a later
+// Start or crash-restart will pick them up.
+func (m *CaddyManager) restartLocked() error {
+	if !m.running || m.cmd == nil || m.cmd.Process == nil {
+		return nil
 	}
 
-	return nil
+	// Flag the deliberate restart so the old process's crash watcher does
+	// not try to restart it a second time.
+	m.restarting = true
+	proc := m.cmd.Process
+	watcherDone := m.watcherDone
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		m.restarting = false
+		return fmt.Errorf("signal caddy: %w", err)
+	}
+
+	// Release the lock while waiting: the watcher needs it to clean up and
+	// close watcherDone. Re-acquire before starting the replacement.
+	m.mu.Unlock()
+	defer m.mu.Lock()
+
+	if watcherDone != nil {
+		select {
+		case <-watcherDone:
+			// Old process exited cleanly.
+		case <-time.After(StopTimeout):
+			// Graceful shutdown stuck — force kill and wait for the watcher.
+			_ = proc.Kill()
+			select {
+			case <-watcherDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+
+	m.restarting = false
+	if m.running {
+		// A concurrent reload already started the replacement.
+		return nil
+	}
+	return m.startProcess()
 }
 
 // IsRunning checks if the Caddy process is still alive.
@@ -434,11 +490,13 @@ func (m *CaddyManager) IsRunning() bool {
 }
 
 // AddDomainSnippet writes a site snippet file for the given domain and reloads Caddy.
-func (m *CaddyManager) AddDomainSnippet(appName string, domain string, port int) error {
+// When httpOnly is true the snippet contains only the http:// listener block
+// (no TLS/https block) — used for domains not covered by an origin cert.
+func (m *CaddyManager) AddDomainSnippet(appName string, domain string, port int, httpOnly bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	snippet := m.generateAppSnippet(appName, port, []string{domain})
+	snippet := m.generateAppSnippet(appName, port, []string{domain}, map[string]bool{domain: httpOnly})
 	filename := SiteFilename(appName, domain)
 	path := filepath.Join(m.sitesDir(), filename)
 
@@ -449,11 +507,7 @@ func (m *CaddyManager) AddDomainSnippet(appName string, domain string, port int)
 		return fmt.Errorf("write snippet %s: %w", filename, err)
 	}
 
-	if m.running && m.cmd != nil && m.cmd.Process != nil {
-		return m.cmd.Process.Signal(syscall.SIGHUP)
-	}
-
-	return nil
+	return m.restartLocked()
 }
 
 // RemoveDomainSnippet finds and deletes the site file for a domain, then reloads Caddy.
@@ -486,11 +540,7 @@ func (m *CaddyManager) RemoveDomainSnippet(domain string) error {
 		return fmt.Errorf("remove snippet %s: %w", filename, err)
 	}
 
-	if m.running && m.cmd != nil && m.cmd.Process != nil {
-		return m.cmd.Process.Signal(syscall.SIGHUP)
-	}
-
-	return nil
+	return m.restartLocked()
 }
 
 // removeOrphanedSnippet attempts to delete any snippet file containing the given domain.
@@ -546,8 +596,12 @@ func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int
 	}
 
 	// Regenerate each domain snippet with the new port
+	httpOnly := make(map[string]bool, len(domains))
 	for _, d := range domains {
-		snippet := m.generateAppSnippet(app.Name, newPort, []string{d.Domain})
+		httpOnly[d.Domain] = d.HTTPOnly
+	}
+	for _, d := range domains {
+		snippet := m.generateAppSnippet(app.Name, newPort, []string{d.Domain}, httpOnly)
 		filename := SiteFilename(app.Name, d.Domain)
 		path := filepath.Join(m.sitesDir(), filename)
 		if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
@@ -558,12 +612,9 @@ func (m *CaddyManager) UpdatePortSnippets(appID string, oldPort int, newPort int
 		}
 	}
 
-	if m.running && m.cmd != nil && m.cmd.Process != nil {
-		return m.cmd.Process.Signal(syscall.SIGHUP)
-	}
-
-	return nil
+	return m.restartLocked()
 }
+
 // generateSnippets writes snippet files for all running apps with domains.
 // generateSnippets writes snippet files for all running apps with domains.
 // Old snippet files not in the current DB state are cleaned up.
@@ -582,12 +633,17 @@ func (m *CaddyManager) generateSnippets() error {
 			return fmt.Errorf("list domains for app %s: %w", app.Name, err)
 		}
 
+		httpOnly := make(map[string]bool, len(domains))
+		for _, d := range domains {
+			httpOnly[d.Domain] = d.HTTPOnly
+		}
+
 		for _, d := range domains {
 			filename := SiteFilename(app.Name, d.Domain)
 			expected[filename] = true
 
 			path := filepath.Join(m.sitesDir(), filename)
-			snippet := m.generateAppSnippet(app.Name, app.Port, []string{d.Domain})
+			snippet := m.generateAppSnippet(app.Name, app.Port, []string{d.Domain}, httpOnly)
 			if err := os.MkdirAll(m.sitesDir(), 0700); err != nil {
 				return fmt.Errorf("create sites dir: %w", err)
 			}
@@ -630,6 +686,7 @@ func isProcessAlive(pid int) bool {
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
 }
+
 // appSnippetTemplate is the Go template for generating a Caddyfile snippet
 // for an app with multiple domains.
 //
@@ -646,6 +703,9 @@ const appSnippetTemplate = `# deploy: {{.AppName}}
     tls internal
     reverse_proxy localhost:{{$.Port}}
 }
+{{else if .HTTPOnly}}http://{{.Name}} {
+    reverse_proxy localhost:{{$.Port}}
+}
 {{else}}http://{{.Name}} {
     reverse_proxy localhost:{{$.Port}}
 }
@@ -657,9 +717,10 @@ const appSnippetTemplate = `# deploy: {{.AppName}}
 
 // domainEntry carries per-domain data used by appSnippetTemplate.
 type domainEntry struct {
-	Name    string
-	IsLocal bool
-	TLSLine string
+	Name     string
+	IsLocal  bool
+	HTTPOnly bool
+	TLSLine  string
 }
 
 type appSnippetData struct {
@@ -674,10 +735,10 @@ type appSnippetData struct {
 //
 // For non-localhost domains the TLSLine is set to the origin cert pair
 // (configDir/certs/origin.{pem,key}) only when both files exist.
-func (m *CaddyManager) generateAppSnippet(appName string, port int, domains []string) string {
+func (m *CaddyManager) generateAppSnippet(appName string, port int, domains []string, httpOnly map[string]bool) string {
 	entries := make([]domainEntry, 0, len(domains))
 	for _, d := range domains {
-		entry := domainEntry{Name: d, IsLocal: IsLocalDomain(d)}
+		entry := domainEntry{Name: d, IsLocal: IsLocalDomain(d), HTTPOnly: httpOnly[d]}
 		if !entry.IsLocal {
 			certPath := filepath.Join(m.configDir, "certs", "origin.pem")
 			keyPath := filepath.Join(m.configDir, "certs", "origin.key")

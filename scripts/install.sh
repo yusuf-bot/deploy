@@ -12,6 +12,7 @@ BINARY="deploy"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${1:-latest}"
 LOCAL_BINARY=""
+DEPLOY_DIR="${DEPLOY_DATA_DIR:-$HOME/.deploy}"
 
 # Parse --local flag
 for arg in "$@"; do
@@ -148,10 +149,10 @@ SERVICEUNIT
 fi
 
 # Initialize
-if [ ! -f "$HOME/.deploy/master.key" ]; then
+if [ ! -f "$DEPLOY_DIR/master.key" ]; then
     info "Initializing deploy environment..."
     "$INSTALL_DIR/$BINARY" init 2>/dev/null || warn "Run 'deploy init' manually"
-    if [ -f "$HOME/.deploy/master.key" ]; then
+    if [ -f "$DEPLOY_DIR/master.key" ]; then
         ok "Deploy environment initialized"
     fi
 else

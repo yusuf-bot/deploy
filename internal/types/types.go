@@ -110,6 +110,7 @@ type App struct {
 	Env         map[string]string `json:"env"`
 	Volumes []VolumeMapping `json:"volumes,omitempty"`
 	Dev     bool            `json:"dev,omitempty"`
+	Network string          `json:"network,omitempty"`
 	Command string          `json:"command,omitempty"`
 	Resources *ResourceConfig `json:"resources,omitempty"`
 	ContainerID string            `json:"container_id,omitempty"`
@@ -173,6 +174,7 @@ type DeployConfig struct {
 	Resources ResourceConfig    `yaml:"resources,omitempty"`
 	Dev       *DevConfig        `yaml:"dev,omitempty"`
 	Volumes   []VolumeMapping   `yaml:"volumes,omitempty"`
+	Network   string            `yaml:"network,omitempty"`
 }
 
 // BuildConfig holds Docker build settings.
@@ -355,13 +357,15 @@ type Domain struct {
 	AppID     string `json:"app_id"`
 	AppName   string `json:"app_name,omitempty"`
 	Domain    string `json:"domain"`
+	HTTPOnly  bool   `json:"http_only,omitempty"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
 
 // AddDomainRequest is the JSON body for POST /api/v1/apps/{name}/domains.
 type AddDomainRequest struct {
-	Domain string `json:"domain"`
+	Domain   string `json:"domain"`
+	HTTPOnly bool   `json:"http_only,omitempty"`
 }
 
 // ListDomainsResponse is the response for GET /api/v1/apps/{name}/domains.

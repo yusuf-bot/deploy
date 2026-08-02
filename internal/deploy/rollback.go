@@ -124,7 +124,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		svcPort = cfg.Ports[0].Container
 	}
 
-	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort, targetVersion, cfg.Resources)
+	containerID, err := d.createPromoteContainer(ctx, app, imageRef, mergedEnv, hostPort, svcPort, targetVersion, cfg.Resources, cfg.Network)
 	if err != nil {
 		state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
 			fmt.Sprintf("create container: %v", err))

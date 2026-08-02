@@ -3,7 +3,8 @@
 // Caddy runs as a subprocess managed by the daemon (not embedded).
 // The daemon writes Caddyfile snippets in ~/.deploy/caddy/sites/*.conf.
 // The main Caddyfile imports all snippets via a glob pattern.
-// On changes: write/update/delete snippet files, SIGHUP the Caddy process.
+// On changes: write/update/delete snippet files, then restart the Caddy
+// process so it re-reads the generated Caddyfile.
 package caddyfile
 
 import (

@@ -18,6 +18,7 @@ type Migration struct {
 // v3 = Phase 3 schema (domains table).
 // v4 = Phase 4 schema (settings table). (domains table).
 // v5 = Phase 5 schema (port_allocations table).
+// v6 = http_only flag on domains (serve domain HTTP-only, no TLS/https block).
 var migrations = []Migration{
 	{
 		Version: 1,
@@ -109,6 +110,12 @@ var migrations = []Migration{
 				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 			);
 			INSERT OR IGNORE INTO port_allocations (app_name, port) SELECT name, port FROM apps;
+		`,
+	},
+	{
+		Version: 6,
+		SQL: `
+			ALTER TABLE domains ADD COLUMN http_only INTEGER NOT NULL DEFAULT 0;
 		`,
 	},
 }

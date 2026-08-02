@@ -102,6 +102,11 @@ func (d *DockerRunner) CreateContainer(ctx context.Context, app *types.App, vers
 		PortBindings:  portBindings,
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
 	}
+	// Optional docker network (deploy.yml `network:`). When absent the
+	// default bridge is used, matching previous behavior.
+	if app.Network != "" {
+		hostCfg.NetworkMode = container.NetworkMode(app.Network)
+	}
 
 	// Apply resource limits from app config
 	if app.Resources != nil {

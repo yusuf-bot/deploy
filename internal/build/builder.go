@@ -55,11 +55,14 @@ func tarDir(w io.WriteCloser, dir string) error {
 		".DS_Store", "Thumbs.db",
 		".env", ".env.local",
 	}
-	// Merge auto-exclude with .dockerignore patterns
-	allPatterns := autoExclude
-	if ignorePatterns != nil {
-		allPatterns = append(allPatterns, ignorePatterns...)
+	// Merge auto-exclude with .dockerignore patterns. User patterns are
+	// evaluated first so an explicit negation (e.g. `!.env`) re-includes a
+	// file that would otherwise be auto-excluded.
+	allPatterns := ignorePatterns
+	if allPatterns == nil {
+		allPatterns = []string{}
 	}
+	allPatterns = append(allPatterns, autoExclude...)
 
 	err := filepath.Walk(dir, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {

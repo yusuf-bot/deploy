@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ func runDaemon() error {
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
 			usr, err := user.Lookup(sudoUser)
 			if err == nil {
-				os.Setenv("DEPLOY_HOME", usr.HomeDir+"/.deploy")
+				os.Setenv("DEPLOY_HOME", filepath.Join(usr.HomeDir, config.DeployDir))
 			}
 		}
 	}

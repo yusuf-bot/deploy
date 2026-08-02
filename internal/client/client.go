@@ -27,7 +27,7 @@ func New(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
 		http: http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: 20 * time.Minute,
 			Transport: &http.Transport{
 				Dial: func(network, addr string) (net.Conn, error) {
 					return net.DialTimeout("unix", socketPath, 5*time.Second)
@@ -372,9 +372,11 @@ func (c *Client) ListSecrets(appName string) ([]*types.Secret, error) {
 	return secrets, nil
 }
 
-// AddDomain adds a custom domain to an application.
-func (c *Client) AddDomain(appName string, domain string) error {
-	req := types.AddDomainRequest{Domain: domain}
+// AddDomain adds a custom domain to an application. When httpOnly is true the
+// domain is served over plain HTTP only (no TLS/https block) — used for domains
+// not covered by an origin cert.
+func (c *Client) AddDomain(appName string, domain string, httpOnly bool) error {
+	req := types.AddDomainRequest{Domain: domain, HTTPOnly: httpOnly}
 	return c.doRequest("POST", "/api/v1/apps/"+appName+"/domains", req, nil)
 }
 

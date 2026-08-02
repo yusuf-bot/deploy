@@ -30,7 +30,7 @@ var domainAddCmd = &cobra.Command{
 		}
 
 		c := newClient()
-		if err := c.AddDomain(appName, domain); err != nil {
+		if err := c.AddDomain(appName, domain, domainNoTLS); err != nil {
 			return fmt.Errorf("add domain: %w", err)
 		}
 
@@ -72,6 +72,9 @@ var domainRmCmd = &cobra.Command{
 		return nil
 	},
 }
+
+// domainNoTLS marks a domain to be served HTTP-only (no TLS/https block).
+var domainNoTLS bool
 
 var domainLsCmd = &cobra.Command{
 	Use:   "ls [app-name]",
@@ -126,6 +129,7 @@ var domainLsCmd = &cobra.Command{
 
 
 func init() {
+	domainAddCmd.Flags().BoolVar(&domainNoTLS, "no-tls", false, "serve the domain over plain HTTP only (no TLS/https block; for domains not covered by an origin cert)")
 	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainRmCmd)
 	domainCmd.AddCommand(domainLsCmd)

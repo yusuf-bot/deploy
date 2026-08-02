@@ -1230,8 +1230,9 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	domain := &types.Domain{
-		AppID:  app.ID,
-		Domain: req.Domain,
+		AppID:    app.ID,
+		Domain:   req.Domain,
+		HTTPOnly: req.HTTPOnly,
 	}
 	if err := state.CreateDomain(s.db, domain); err != nil {
 		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
@@ -1241,7 +1242,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 
 	// Write Caddy snippet and reload
 	if s.caddyManager != nil && s.caddyManager.IsRunning() {
-		if err := s.caddyManager.AddDomainSnippet(app.Name, req.Domain, app.Port); err != nil {
+		if err := s.caddyManager.AddDomainSnippet(app.Name, req.Domain, app.Port, req.HTTPOnly); err != nil {
 			log.Printf("warning: caddy add domain snippet: %v", err)
 		}
 	}
