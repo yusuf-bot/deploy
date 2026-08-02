@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -66,11 +65,12 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	}
  	auditVersion = targetVersion
 
-	// Check tarball exists
-	tarballPath := build.TarballPath(appName, targetVersion)
-	if _, err := os.Stat(tarballPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("no saved image found for %s %s", appName, targetVersion)
+	// Load the image tarball (zstd or legacy format); errors if neither exists
+	tarball, err := build.OpenTarball(appName, targetVersion)
+	if err != nil {
+		return nil, err
 	}
+	defer tarball.Close()
 
 	// Record old container info before making any changes
 	oldContainerID := ""
@@ -82,11 +82,6 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 
 	// Load the image from tarball
 	imageRef := fmt.Sprintf("%s:%s", appName, targetVersion)
-	tarball, err := os.Open(tarballPath)
-	if err != nil {
-		return nil, fmt.Errorf("open tarball: %w", err)
-	}
-	defer tarball.Close()
 
 	loadResult, err := d.client.ImageLoad(ctx, tarball, moby.ImageLoadWithQuiet(true))
 	if err != nil {
@@ -115,7 +110,7 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	if err != nil {
 		secrets = nil
 	}
-	mergedEnv := mergeEnv(app.Env, secrets)
+	mergedEnv := state.MergeEnv(app.Env, secrets)
 
 	// Create new container
 	hostPort := app.Port + 1

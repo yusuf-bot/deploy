@@ -71,7 +71,7 @@ while read oldrev newrev refname; do
         main|master)
             mkdir -p "$CHECKOUT_DIR"
             git --work-tree="$CHECKOUT_DIR" checkout -f "$branch"
-            cd "$CHECKOUT_DIR" && exec $DEPLOY_BIN promote %[1]s --dir "$CHECKOUT_DIR"
+            cd "$CHECKOUT_DIR" && exec $DEPLOY_BIN up %[1]s --dir "$CHECKOUT_DIR"
             ;;
     esac
 done

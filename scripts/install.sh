@@ -185,9 +185,9 @@ if "$INSTALL_DIR/$BINARY" version >/dev/null 2>&1; then
     printf "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
     printf "\n${BLUE}Next steps:${NC}\n"
     printf "  ${YELLOW}1.${NC} Configure domains:     ${GREEN}deploy init${NC}\n"
-    printf "  ${YELLOW}2.${NC} Deploy your first app:  ${GREEN}deploy promote myapp${NC}\n"
+    printf "  ${YELLOW}2.${NC} Deploy your first app:  ${GREEN}deploy up myapp${NC}\n"
     printf "  ${YELLOW}3.${NC} View status:            ${GREEN}deploy status${NC}\n"
-    printf "  ${YELLOW}4.${NC} Read the docs:          ${BLUE}https://docs.deploy.openexplorer.xyz${NC}\n"
+    printf "  ${YELLOW}4.${NC} Read the docs:          ${BLUE}https://deploy.openexplorer.xyz/docs${NC}\n"
     printf "\n"
 else
     err "Installation failed — binary not found at $INSTALL_DIR/$BINARY"

@@ -17,7 +17,7 @@ var promoteDir string
 
 var promoteCmd = &cobra.Command{
 	Use:   "promote [app-name]",
-	Short: "Promote a new deployment",
+	Short: "Deploy a new version",
 	Long:  `Build and deploy a new version. App name can come from deploy.yml or be provided as argument.`,
 	Args:  cobra.MaximumNArgs(1),
 	Hidden: true,
@@ -66,7 +66,7 @@ var promoteCmd = &cobra.Command{
 		}
 
 		if err != nil {
-			return fmt.Errorf("promote: %w", err)
+			return fmt.Errorf("deploy: %w", err)
 		}
 
 		if jsonFlag {
@@ -78,7 +78,7 @@ var promoteCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("Promoted %s: %s\n", appName, resp.Message)
+		fmt.Printf("Deployed %s: %s\n", appName, resp.Message)
 		return nil
 	},
 }

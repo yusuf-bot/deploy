@@ -49,7 +49,7 @@ jobs:
           script: |
             cd /path/to/app
             git pull
-            deploy promote --dir .
+            deploy up --dir .
 ```
 
 ## GitLab CI
@@ -68,7 +68,7 @@ deploy:
     - ssh $DEPLOY_USER@$DEPLOY_HOST "
         cd /path/to/app &&
         git pull &&
-        deploy promote --dir .
+        deploy up --dir .
       "
   only:
     - main
@@ -76,7 +76,7 @@ deploy:
 
 ## Notes
 
-- The `deploy.yml` file must exist in your project root for `deploy promote` to work.
+- The `deploy.yml` file must exist in your project root for `deploy up` to work.
 - Use `--wait` to block until the deployment finishes so CI catches failures.
 - The deploy daemon must be running on the server (`deploy daemon`).
 - Consider using `deploy status --json` for health checks in CI pipelines.

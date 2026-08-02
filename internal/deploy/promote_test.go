@@ -402,7 +402,7 @@ func TestMergeEnv(t *testing.T) {
 		"NODE_ENV":    "should-not-appear", // secrets override app env
 	}
 
-	env := mergeEnv(appEnv, secrets)
+	env := state.MergeEnv(appEnv, secrets)
 
 	envMap := make(map[string]string)
 	for _, e := range env {

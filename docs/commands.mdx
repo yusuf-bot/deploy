@@ -15,8 +15,8 @@ Flags: `--no-systemd` — Skip systemd service setup
 ### `deploy up [app-name]`
 Primary deploy command. Builds Docker image, starts new container, health checks, swaps Caddy config, stops old container. Zero-downtime.
 
-Alias: `deploy promote`
-Use `--dir <path>` to specify the app directory (default: `.`).
+Legacy alias: `deploy promote` (hidden, kept for backward compatibility)
+Use `--dir <path>` to specify the app directory (default: `.`). Use `--wait=false` to return immediately instead of blocking until the deploy finishes.
 
 ### `deploy rollback <name> [version]`
 Revert to a specific version or the previous deployment. Loads last tarball, starts it, health checks, swaps traffic.

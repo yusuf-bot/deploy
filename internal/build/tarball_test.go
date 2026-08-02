@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/moby/moby/api/types/image"
 	moby "github.com/moby/moby/client"
 )
@@ -127,8 +129,18 @@ func TestSaveImage(t *testing.T) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Fatalf("saved tarball not found at %s", path)
 	}
-	// Verify content
-	data, err := os.ReadFile(path)
+	// Verify the file is a valid zstd stream and decompresses to the original data
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open tarball: %v", err)
+	}
+	defer f.Close()
+	dec, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatalf("zstd reader: %v", err)
+	}
+	defer dec.Close()
+	data, err := io.ReadAll(dec)
 	if err != nil {
 		t.Fatalf("read tarball: %v", err)
 	}
@@ -137,8 +149,8 @@ func TestSaveImage(t *testing.T) {
 	}
 
 	// Verify path format
-	if !strings.HasSuffix(path, ".tar") {
-		t.Errorf("expected .tar extension, got %s", path)
+	if !strings.HasSuffix(path, ".tar.zst") {
+		t.Errorf("expected .tar.zst extension, got %s", path)
 	}
 	if !strings.Contains(path, appName) {
 		t.Errorf("expected path to contain app name %s", appName)
@@ -291,14 +303,120 @@ func TestCleanOldTarballs(t *testing.T) {
 
 func TestTarballPath(t *testing.T) {
 	p := TarballPath("myapp", "v1.0.0")
-	if !strings.HasSuffix(p, ".tar") {
-		t.Errorf("expected .tar extension, got %s", p)
+	if !strings.HasSuffix(p, ".tar.zst") {
+		t.Errorf("expected .tar.zst extension, got %s", p)
 	}
 	if !strings.Contains(p, "myapp") {
 		t.Errorf("expected path to contain app name")
 	}
 	if !strings.Contains(p, "v1.0.0") {
 		t.Errorf("expected path to contain version")
+	}
+}
+
+func TestLoadImageLegacyTar(t *testing.T) {
+	mock := newMockDocker()
+	ctx := context.Background()
+	appName := "legacy-app"
+	version := "v0.9.0"
+
+	// Write a legacy uncompressed .tar manually
+	dir := appImagesDir(appName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacyPath := filepath.Join(dir, version+".tar")
+	if err := os.WriteFile(legacyPath, []byte("legacy-tar-data"), 0600); err != nil {
+		t.Fatalf("write legacy tarball: %v", err)
+	}
+
+	// LoadImage must read the legacy format
+	ref, err := LoadImage(ctx, mock, appName, version)
+	if err != nil {
+		t.Fatalf("LoadImage legacy: %v", err)
+	}
+	if ref != "legacy-app:v0.9.0" {
+		t.Errorf("expected legacy-app:v0.9.0, got %s", ref)
+	}
+
+	mock.mu.Lock()
+	loaded := len(mock.loadedRefs) > 0 && mock.loadedRefs[len(mock.loadedRefs)-1] == "legacy-tar-data"
+	mock.mu.Unlock()
+	if !loaded {
+		t.Errorf("legacy tar data was not loaded verbatim")
+	}
+
+	// ListTarballs must include the legacy version
+	versions, err := ListTarballs(appName)
+	if err != nil {
+		t.Fatalf("ListTarballs: %v", err)
+	}
+	if len(versions) != 1 || versions[0] != version {
+		t.Errorf("expected [%s] from legacy tar, got %v", version, versions)
+	}
+}
+
+func TestListTarballsMixedFormats(t *testing.T) {
+	mock := newMockDocker()
+	ctx := context.Background()
+	appName := "mixed-app"
+
+	// One zstd tarball via SaveImage
+	mock.mu.Lock()
+	mock.savedImages["mixed-app:v2"] = []byte("v2-data")
+	mock.mu.Unlock()
+	if _, err := SaveImage(ctx, mock, "mixed-app:v2", appName, "v2"); err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+
+	// One legacy .tar written manually
+	dir := appImagesDir(appName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "v1.tar"), []byte("v1-data"), 0600); err != nil {
+		t.Fatalf("write legacy tarball: %v", err)
+	}
+
+	versions, err := ListTarballs(appName)
+	if err != nil {
+		t.Fatalf("ListTarballs: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 versions, got %v", versions)
+	}
+	if versions[0] != "v1" || versions[1] != "v2" {
+		t.Errorf("expected [v1 v2], got %v", versions)
+	}
+
+	// RemoveTarball must remove both formats for a version
+	if err := RemoveTarball(appName, "v1"); err != nil {
+		t.Fatalf("RemoveTarball v1: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "v1.tar")); !os.IsNotExist(err) {
+		t.Errorf("legacy v1.tar should have been removed")
+	}
+}
+
+func TestRemoveTarballRemovesZstd(t *testing.T) {
+	mock := newMockDocker()
+	ctx := context.Background()
+	appName := "rmz-app"
+	version := "v1"
+
+	mock.mu.Lock()
+	mock.savedImages["rmz-app:v1"] = []byte("data")
+	mock.mu.Unlock()
+	path, err := SaveImage(ctx, mock, "rmz-app:v1", appName, version)
+	if err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+
+	if err := RemoveTarball(appName, version); err != nil {
+		t.Fatalf("RemoveTarball: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("tarball should have been removed")
 	}
 }
 

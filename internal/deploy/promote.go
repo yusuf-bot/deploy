@@ -240,7 +240,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	for k, v := range cfg.Env {
 		mergedAppEnv[k] = v
 	}
-	mergedEnv := mergeEnv(mergedAppEnv, secrets)
+	mergedEnv := state.MergeEnv(mergedAppEnv, secrets)
 
 	// 7. Start new container on appPort+1
 	hostPort := app.Port + 1
@@ -412,7 +412,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		InitiatedBy: audit.CurrentUser(),
 	})
 	return &types.PromoteResponse{
-		Message:        fmt.Sprintf("promoted %s to %s in %.0fs", appName, version, time.Since(dep.CreatedAt).Seconds()),
+		Message:        fmt.Sprintf("deployed %s to version %s in %.0fs", appName, version, time.Since(dep.CreatedAt).Seconds()),
 		Version:        version,
 		NewContainerID: containerID,
 		Port:           hostPort,
@@ -449,25 +449,4 @@ func (d *Deployer) createPromoteContainer(ctx context.Context, app *types.App, i
 		promoteApp.Resources = &r
 	}
 	return d.runner.CreateContainer(ctx, promoteApp, version)
-}
-// mergeEnv combines app env vars with decrypted secrets. Secrets override app env on conflict.
-func mergeEnv(appEnv map[string]string, secrets map[string]string) []string {
-	merged := make(map[string]string)
-
-	// Start with app env
-	for k, v := range appEnv {
-		merged[k] = v
-	}
-
-	// Secrets override app env
-	for k, v := range secrets {
-		merged[k] = v
-	}
-
-	// Convert to KEY=VALUE format
-	env := make([]string, 0, len(merged))
-	for k, v := range merged {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-	return env
 }

@@ -463,6 +463,19 @@ func (c *Client) DevStop(name string) (*types.StartStopResponse, error) {
 	return &result, nil
 }
 
+// Prune deletes old image tarballs, keeping the newest `keep` per app
+// (default 3). When dryRun is true nothing is deleted — only the plan is
+// returned. App name empty prunes all apps. The tarball of the currently
+// running version is never deleted.
+func (c *Client) Prune(appName string, keep int, dryRun bool) (*types.PruneResponse, error) {
+	req := types.PruneRequest{App: appName, Keep: keep, DryRun: dryRun}
+	var result types.PruneResponse
+	if err := c.doRequest("POST", "/api/v1/prune", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // Shutdown tells the daemon to shut down gracefully.
 func (c *Client) Shutdown() error {
 	return c.doRequest("POST", "/api/v1/shutdown", nil, nil)

@@ -7,11 +7,6 @@ BASE_DOMAIN=yourdomain.com
 # Dev domain (appname.dev.yourdomain.com)
 # DEV_DOMAIN=dev.yourdomain.com
 
-# DNS automation (optional)
-# DNS_PROVIDER=cloudflare
-# CLOUDFLARE_TOKEN=your_cloudflare_api_token
-# CLOUDFLARE_ZONE=yourdomain.com
-
 # SSL certificate paths (optional — only set if using HTTPS)
 # SSL_CERT=/etc/letsencrypt/live/yourdomain.com/fullchain.pem
 # SSL_KEY=/etc/letsencrypt/live/yourdomain.com/privkey.pem

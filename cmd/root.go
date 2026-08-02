@@ -13,7 +13,7 @@ import (
 
 var (
 	jsonFlag  bool
-	waitFlag  bool
+	waitFlag  = true // default wait=true; --wait flag is registered on `up` only
 	asyncFlag bool
 )
 var Version = "0.3.0"
@@ -52,7 +52,6 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().BoolVarP(&jsonFlag, "json", "j", false, "Output in JSON format")
-	rootCmd.PersistentFlags().BoolVar(&waitFlag, "wait", true, "Wait for operation to complete")
 	rootCmd.PersistentFlags().BoolVar(&asyncFlag, "async", false, "Run operation asynchronously")
 	var versionCmd = &cobra.Command{
 		Use:   "version",

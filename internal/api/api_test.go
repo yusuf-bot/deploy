@@ -527,6 +527,167 @@ func TestImagesRemoveEndpoint(t *testing.T) {
 	}
 }
 
+func TestStartAppInjectsSecrets(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create an app with a regular env var
+	appBody := `{"name":"secret-app","port":16000,"image":"secret-app:latest","env":{"APP_ENV":"appval"}}`
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", bytes.NewBufferString(appBody))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Set a secret that must be injected at start
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/secret-app/secrets",
+		bytes.NewBufferString(`{"key":"SECRET_VAR","value":"secretval"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set secret: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Start the app (sync path exercises startAppContainer)
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/secret-app/start", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// The mock runner must have created a container whose env includes the
+	// decrypted secret in addition to the app env.
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	found := false
+	for _, c := range mock.Containers {
+		found = true
+		if c.App.Env["SECRET_VAR"] != "secretval" {
+			t.Errorf("secret not injected: env=%v", c.App.Env)
+		}
+		if c.App.Env["APP_ENV"] != "appval" {
+			t.Errorf("app env lost: env=%v", c.App.Env)
+		}
+	}
+	if !found {
+		t.Fatal("no container created by mock runner")
+	}
+}
+
+func TestDevStartInjectsSecrets(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	appBody := `{"name":"dev-secret-app","port":16001,"image":"dev-secret-app:latest"}`
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", bytes.NewBufferString(appBody))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/dev-secret-app/secrets",
+		bytes.NewBufferString(`{"key":"DEV_TOKEN","value":"tok123"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set secret: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/dev-secret-app/dev/start", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	found := false
+	for _, c := range mock.Containers {
+		found = true
+		if !c.App.Dev {
+			t.Error("expected dev container")
+		}
+		if c.App.Env["DEV_TOKEN"] != "tok123" {
+			t.Errorf("secret not injected into dev container: env=%v", c.App.Env)
+		}
+	}
+	if !found {
+		t.Fatal("no container created by mock runner")
+	}
+}
+
+func TestPruneEndpoint(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DEPLOY_DATA_DIR", tmp)
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create an app
+	appBody := `{"name":"prune-app","port":15001,"image":"prune-app:latest"}`
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", bytes.NewBufferString(appBody))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Write 4 tarballs directly to the images dir
+	imgDir := filepath.Join(tmp, "images", "prune-app")
+	if err := os.MkdirAll(imgDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for _, v := range []string{"v1", "v2", "v3", "v4"} {
+		if err := os.WriteFile(filepath.Join(imgDir, v+".tar"), make([]byte, 100), 0600); err != nil {
+			t.Fatalf("write tarball: %v", err)
+		}
+	}
+
+	// Dry run first — nothing deleted
+	body := `{"app":"prune-app","keep":2,"dry_run":true}`
+	resp = httpDo(t, socketPath, "POST", "/api/v1/prune", bytes.NewBufferString(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prune dry-run: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	var pr types.PruneResponse
+	json.Unmarshal([]byte(readBody(t, resp)), &pr)
+	if !pr.DryRun {
+		t.Error("expected dry_run=true in response")
+	}
+	if len(pr.Apps) != 1 || len(pr.Apps[0].Removed) != 2 {
+		t.Errorf("expected 1 app with 2 removed in dry run, got %+v", pr.Apps)
+	}
+	if pr.Apps[0].Removed[0].Version != "v1" {
+		t.Errorf("expected v1 removed first, got %+v", pr.Apps[0].Removed)
+	}
+	// Files still present
+	if _, err := os.Stat(filepath.Join(imgDir, "v1.tar")); err != nil {
+		t.Errorf("dry run deleted files: %v", err)
+	}
+
+	// Real prune
+	resp = httpDo(t, socketPath, "POST", "/api/v1/prune", bytes.NewBufferString(`{"app":"prune-app","keep":2}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prune: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	pr = types.PruneResponse{}
+	json.Unmarshal([]byte(readBody(t, resp)), &pr)
+	if len(pr.Apps) != 1 || len(pr.Apps[0].Removed) != 2 {
+		t.Fatalf("expected 2 removed, got %+v", pr.Apps)
+	}
+	if _, err := os.Stat(filepath.Join(imgDir, "v1.tar")); !os.IsNotExist(err) {
+		t.Error("v1.tar should be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(imgDir, "v4.tar")); err != nil {
+		t.Error("v4.tar should be kept")
+	}
+}
+
+func TestPruneEndpointValidation(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	resp := httpDo(t, socketPath, "POST", "/api/v1/prune", bytes.NewBufferString(`{"keep":-1}`))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for keep=-1, got %d", resp.StatusCode)
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/prune", bytes.NewBufferString(`{"app":"does-not-exist"}`))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for missing app, got %d", resp.StatusCode)
+	}
+}
+
 func TestPromoteRequiresAppName(t *testing.T) {
 	_, socketPath := startTestServer(t)
 	defer os.Remove(socketPath)

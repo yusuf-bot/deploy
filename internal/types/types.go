@@ -378,6 +378,35 @@ type RemoveAppResponse struct {
 	Message string `json:"message"`
 }
 
+// PruneRequest is the JSON body for POST /api/v1/prune.
+type PruneRequest struct {
+	App    string `json:"app,omitempty"`
+	Keep   int    `json:"keep,omitempty"`
+	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+// PruneFile describes one tarball in a prune report.
+type PruneFile struct {
+	Version   string `json:"version"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// PruneAppResult is the prune report for a single app.
+type PruneAppResult struct {
+	App         string      `json:"app"`
+	Removed     []PruneFile `json:"removed"`
+	Kept        []PruneFile `json:"kept"`
+	Protected   []PruneFile `json:"protected"`
+	FreedBytes  int64       `json:"freed_bytes"`
+}
+
+// PruneResponse is the response for POST /api/v1/prune.
+type PruneResponse struct {
+	Apps           []PruneAppResult `json:"apps"`
+	TotalFreedBytes int64           `json:"total_freed_bytes"`
+	DryRun         bool             `json:"dry_run"`
+}
+
 // ProgressEvent is a streaming progress event for long-running operations.
 type ProgressEvent struct {
 	Step    string `json:"step"`

@@ -132,6 +132,9 @@ func (s *Server) registerRoutes() {
 	mux.HandleFunc("DELETE /api/v1/apps/{name}/secrets/{key}", s.handleRemoveSecret)
 	mux.HandleFunc("GET /api/v1/status", s.handleGlobalStatus)
 
+	// Phase 8: prune old image tarballs
+	mux.HandleFunc("POST /api/v1/prune", s.handlePrune)
+
 	// Phase 3: domain management
 	mux.HandleFunc("POST /api/v1/apps/{name}/domains", s.handleAddDomain)
 	mux.HandleFunc("GET /api/v1/apps/{name}/domains", s.handleListDomains)

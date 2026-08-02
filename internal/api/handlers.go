@@ -339,6 +339,17 @@ func (s *Server) startAppContainer(ctx context.Context, app *types.App) (string,
 		return "", fmt.Errorf("pull image: %w", err)
 	}
 
+	// Inject decrypted secrets (they override deploy.yml env on conflict),
+	// matching promote/rollback behavior.
+	secrets, err := state.ListSecretsByApp(s.db, app.ID, s.masterKey)
+	if err != nil {
+		log.Printf("warning: list secrets for %s: %v", app.Name, err)
+		secrets = nil
+	}
+	if len(secrets) > 0 {
+		app.Env = state.MergeEnvMap(app.Env, secrets)
+	}
+
 	ver := fmt.Sprintf("manual-%d", time.Now().Unix())
 	containerID, err := s.runner.CreateContainer(ctx, app, ver)
 	if err != nil {
@@ -548,6 +559,17 @@ func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
 	devApp.Port = devPort
 	devApp.Volumes = validatedVolumes
 	devApp.Command = devCmd
+
+	// Inject decrypted secrets (they override deploy.yml env on conflict),
+	// matching promote/rollback behavior.
+	secrets, err := state.ListSecretsByApp(s.db, app.ID, s.masterKey)
+	if err != nil {
+		log.Printf("warning: list secrets for %s: %v", app.Name, err)
+		secrets = nil
+	}
+	if len(secrets) > 0 {
+		devApp.Env = state.MergeEnvMap(app.Env, secrets)
+	}
 
 	if err := s.runner.PullImage(r.Context(), app.Image); err != nil {
 		errStr := err.Error()

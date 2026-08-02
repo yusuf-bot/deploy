@@ -131,7 +131,7 @@ deploy domain add myapp example.com
 
 See [ROADMAP.md](ROADMAP.md) for the full plan.
 
-✅ **v0.3.0 — Solo dev experience**: released. Critical bugs fixed (permission model, promote flow, tar build context, health check, config UX), DNS zone extraction for 6 providers, interactive init wizard, scaffold command, graceful shutdown.
+✅ **v0.3.0 — Solo dev experience**: released. Critical bugs fixed (permission model, promote flow, tar build context, health check, config UX), interactive init wizard, scaffold command, graceful shutdown.
 
 ## Design Decisions
 

@@ -19,7 +19,7 @@ archives:
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_
       {{- if eq .Os "linux" }}linux
-      {{- else if eq .Os "darwin" }}macos
+      {{- else if eq .Os "darwin" }}darwin
       {{- end }}_
       {{- .Arch }}
     files:

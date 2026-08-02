@@ -2,29 +2,47 @@
 # Place this in your app's root directory.
 # Run `deploy up` from that directory to deploy.
 
-# Required
-name: myapp              # App name (used for subdomain, container name, etc.)
-type: flask              # App type: flask, node, laravel, static, docker, custom
+# Required: app name (used for the container name, subdomain, etc.)
+app: myapp
 
-# Optional: override the start command
-start: flask run --host=0.0.0.0 --port=$PORT
+# Build stack. Currently supported: dockerfile
+stack: dockerfile
 
-# Optional: dev-mode command
-dev: flask run --debug --host=0.0.0.0 --port=$PORT
+# Docker build settings
+build:
+  context: .          # build context directory (relative to this file)
+  dockerfile: Dockerfile
+  # args:
+  #   BUILD_ENV: production
 
-# Optional: enable WebSocket support in nginx
-websocket: false
-
-# Optional: additional domains (comma-separated)
-domains: api.myapp.com, admin.myapp.com
+# Port mapping: container port is required; host port is optional
+# (auto-assigned from the pool when omitted).
+ports:
+  - container: 8080
+  # - container: 8080
+  #   host: 20010
 
 # Health check settings
 health:
   path: /health
-  timeout: 30
+  # initial_delay: 1s
+  # interval: 2s
+  # timeout: 5s
+  # retries: 15
 
-# Environment variables (loaded via `deploy config:set`)
+# Optional: additional domains served via Caddy
+# domains:
+#   - api.myapp.com
+
+# Environment variables (regular vars; use `deploy secrets set` for secrets —
+# secrets are injected at deploy time and override these on conflict)
 env:
-  DATABASE_URL: postgres://user:pass@localhost/db
-  SECRET_KEY: change-me
-  FLASK_ENV: production
+  LOG_LEVEL: info
+
+# Optional: resource limits
+# resources:
+#   memory: 512m
+#   cpus: "1.0"
+
+# Optional: attach to a specific Docker network
+# network: my-network

@@ -134,6 +134,17 @@ func runDaemon() error {
 			}
 			log.Printf("auto-starting app %q...", app.Name)
 
+			// Inject decrypted secrets (they override deploy.yml env on
+			// conflict), matching promote/rollback behavior.
+			secrets, err := state.ListSecretsByApp(db, app.ID, masterKey)
+			if err != nil {
+				log.Printf("warning: auto-start %q: list secrets: %v", app.Name, err)
+				secrets = nil
+			}
+			if len(secrets) > 0 {
+				app.Env = state.MergeEnvMap(app.Env, secrets)
+			}
+
 			ver := fmt.Sprintf("auto-%d", time.Now().Unix())
 			containerID, err := dockerRunner.CreateContainer(ctx, &app, ver)
 			if err != nil {
