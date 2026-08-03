@@ -27,10 +27,10 @@ func scanAppRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (types.App, error) {
 	var id, name, status, image, envJSON, createdAt, updatedAt string
-	var port int
+	var port, servicePort int
 	var containerID sql.NullString
 
-	err := scanner.Scan(&id, &name, &status, &port, &image, &envJSON, &containerID, &createdAt, &updatedAt)
+	err := scanner.Scan(&id, &name, &status, &port, &servicePort, &image, &envJSON, &containerID, &createdAt, &updatedAt)
 	if err != nil {
 		return types.App{}, err
 	}
@@ -49,7 +49,8 @@ func scanAppRow(scanner interface {
 		ID:        id,
 		Name:      name,
 		Status:    status,
-		Port:      port,
+		Port:        port,
+		ServicePort: servicePort,
 		Image:     image,
 		Env:       env,
 		CreatedAt: createdTime,
@@ -74,9 +75,9 @@ func CreateApp(db *sql.DB, app *types.App) (*types.App, error) {
 	}
 
 	_, err := db.Exec(
-		`INSERT INTO apps (id, name, status, port, image, env, container_id, created_at, updated_at) 
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		app.ID, app.Name, app.Status, app.Port, app.Image, envJSON, containerID, now, now,
+		`INSERT INTO apps (id, name, status, port, service_port, image, env, container_id, created_at, updated_at) 
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.ID, app.Name, app.Status, app.Port, app.ServicePort, app.Image, envJSON, containerID, now, now,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -93,7 +94,7 @@ func CreateApp(db *sql.DB, app *types.App) (*types.App, error) {
 // GetApp retrieves an app by its ID.
 func GetApp(db *sql.DB, id string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, image, env, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
 		 FROM apps WHERE id = ?`, id,
 	)
 	app, err := scanAppRow(row)
@@ -109,7 +110,7 @@ func GetApp(db *sql.DB, id string) (*types.App, error) {
 // GetAppByName retrieves an app by its name.
 func GetAppByName(db *sql.DB, name string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, image, env, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
 		 FROM apps WHERE name = ?`, name,
 	)
 	app, err := scanAppRow(row)
@@ -129,12 +130,12 @@ func ListApps(db *sql.DB, status string) ([]types.App, error) {
 
 	if status != "" {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, image, env, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
 			 FROM apps WHERE status = ? ORDER BY name`, status,
 		)
 	} else {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, image, env, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
 			 FROM apps ORDER BY name`,
 		)
 	}
@@ -211,6 +212,21 @@ func UpdateAppPort(db Execer, name string, port int) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update app port: %w", err)
+	}
+	return nil
+}
+
+// UpdateAppServicePort updates the container (service) port of an app.
+// servicePort is the port the app listens on inside the container; 0 means the
+// container port equals the host port (app.Port).
+func UpdateAppServicePort(db Execer, name string, servicePort int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`UPDATE apps SET service_port = ?, updated_at = ? WHERE name = ?`,
+		servicePort, now, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update app service port: %w", err)
 	}
 	return nil
 }

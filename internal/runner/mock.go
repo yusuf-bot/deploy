@@ -29,13 +29,14 @@ type mockContainer struct {
 }
 
 type mockAppData struct {
-	Name  string
-	Image string
-	Port  int
-	Env   map[string]string
-	Dev   bool
-	Version string
-	Network string
+	Name        string
+	Image       string
+	Port        int
+	ServicePort int
+	Env         map[string]string
+	Dev         bool
+	Version     string
+	Network     string
 }
 
 // NewMockDocker creates a new MockDocker.
@@ -84,10 +85,11 @@ func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App, versio
 	m.Containers[id] = &mockContainer{
 		ID: id,
 		App: &mockAppData{
-			Name:  app.Name,
-			Image: app.Image,
-			Port:  app.Port,
-			Env:   app.Env,
+			Name:        app.Name,
+			Image:       app.Image,
+			Port:        app.Port,
+			ServicePort: app.ServicePort,
+			Env:         app.Env,
 			Dev:   app.Dev,
 			Version: version,
 			Network: app.Network,

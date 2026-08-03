@@ -334,10 +334,30 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) startAppContainer(ctx context.Context, app *types.App) (string, error) {
-	if err := s.runner.PullImage(ctx, app.Image); err != nil {
-		return "", fmt.Errorf("pull image: %w", err)
+// resolveLocalImage returns the image tag to use when starting an app.
+// Deployed apps are local-only: the daemon never pushes to a registry, and
+// deploy up builds versioned tags (app:version) that exist only in the local
+// Docker daemon. Use the active deployment's version tag so start/restart run
+// the built image instead of attempting a registry pull of app:latest. Apps
+// without deployments (manually created) fall back to their configured image.
+func (s *Server) resolveLocalImage(app *types.App) (string, error) {
+	dep, err := state.GetActiveDeployment(s.db, app.ID)
+	if err != nil {
+		return "", fmt.Errorf("get active deployment: %w", err)
 	}
+	if dep != nil && dep.Version != "" {
+		return fmt.Sprintf("%s:%s", app.Name, dep.Version), nil
+	}
+	return app.Image, nil
+}
+
+func (s *Server) startAppContainer(ctx context.Context, app *types.App) (string, error) {
+	// No registry pull: run the locally-built image for the active deployment.
+	imageRef, err := s.resolveLocalImage(app)
+	if err != nil {
+		return "", fmt.Errorf("resolve local image: %w", err)
+	}
+	app.Image = imageRef
 
 	// Inject decrypted secrets (they override deploy.yml env on conflict),
 	// matching promote/rollback behavior.
@@ -571,15 +591,13 @@ func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
 		devApp.Env = state.MergeEnvMap(app.Env, secrets)
 	}
 
-	if err := s.runner.PullImage(r.Context(), app.Image); err != nil {
-		errStr := err.Error()
-	if strings.Contains(errStr, "not found") {
-		writeError(w, http.StatusNotFound, ErrorBody(notFoundAsError(errStr)))
-	} else {
-		writeError(w, http.StatusInternalServerError, ErrorBody(dockerError(errStr)))
-	}
+	// No registry pull: run the locally-built image for the active deployment.
+	imageRef, err := s.resolveLocalImage(app)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
 		return
 	}
+	devApp.Image = imageRef
 
 	ver := fmt.Sprintf("dev-%d", time.Now().Unix())
 	containerID, err := s.runner.CreateContainer(r.Context(), &devApp, ver)

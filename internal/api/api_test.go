@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1051,3 +1052,149 @@ func TestContainerLogsReturnsEmptyForNoContainer(t *testing.T) {
 	}
 }
 
+
+// TestStartSkipsRegistryPull verifies that start does not attempt a registry
+// pull (deploy images are local-only) and runs the local image instead.
+func TestStartSkipsRegistryPull(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Any PullImage call must fail loudly if it is attempted.
+	server.runner.(*runner.MockDocker).ShouldFail["PullImage"] = errors.New("registry pull must not be called")
+
+	body := types.CreateAppRequest{Name: "no-pull", Port: 8080, Image: "localapp:v1.2.3"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/no-pull/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+// TestStartBindsServicePort verifies that start binds host port -> container
+// service port when service_port is persisted on the app (dockerfile stacks
+// with host 0 map host:app.Port -> container:service_port).
+func TestStartBindsServicePort(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	body := types.CreateAppRequest{Name: "svc-bind", Port: 20018, Image: "app:v1"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Persist the container service port the way promote does.
+	if err := state.UpdateAppServicePort(server.db, "svc-bind", 3000); err != nil {
+		t.Fatalf("UpdateAppServicePort: %v", err)
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/svc-bind/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	for _, c := range mock.Containers {
+		if c.App.Name == "svc-bind" && !c.App.Dev {
+			if c.App.Port != 20018 {
+				t.Errorf("expected host port 20018, got %d", c.App.Port)
+			}
+			if c.App.ServicePort != 3000 {
+				t.Errorf("expected service port 3000, got %d", c.App.ServicePort)
+			}
+			return
+		}
+	}
+	t.Error("expected a container for svc-bind")
+}
+
+// TestStartUsesLocalDeploymentImage verifies that start runs the active
+// deployment's locally-built version tag instead of app:latest.
+func TestStartUsesLocalDeploymentImage(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	body := types.CreateAppRequest{Name: "local-img", Port: 8080, Image: "local-img:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = httpDo(t, socketPath, "GET", "/api/v1/apps/local-img", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	var app types.App
+	if err := json.Unmarshal([]byte(readBody(t, resp)), &app); err != nil {
+		t.Fatalf("Unmarshal app: %v", err)
+	}
+
+	// Simulate a deployed app: an active deployment with a local version tag.
+	localVersion := "v20260803000000-abc12345"
+	dep := &types.Deployment{
+		ID:      uuid.New().String(),
+		AppID:   app.ID,
+		Version: localVersion,
+		Status:  types.DeployStatusActive,
+		Port:    8080,
+	}
+	if _, err := state.CreateDeployment(server.db, dep); err != nil {
+		t.Fatalf("CreateDeployment: %v", err)
+	}
+	if err := state.SetActiveDeployment(server.db, dep); err != nil {
+		t.Fatalf("SetActiveDeployment: %v", err)
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/local-img/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	for _, c := range mock.Containers {
+		if c.App.Name == "local-img" && !c.App.Dev {
+			want := "local-img:" + localVersion
+			if c.App.Image != want {
+				t.Errorf("expected container to use local image %q, got %q", want, c.App.Image)
+			}
+			return
+		}
+	}
+	t.Error("expected a non-dev container for local-img")
+}
+
+// TestDevStartSkipsRegistryPull verifies that dev start also skips the
+// registry pull and runs the local image.
+func TestDevStartSkipsRegistryPull(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	server.runner.(*runner.MockDocker).ShouldFail["PullImage"] = errors.New("registry pull must not be called")
+
+	body := types.CreateAppRequest{Name: "dev-skip", Port: 8080, Image: "localdev:v9.9.9"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/dev-skip/dev/start", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("dev start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}

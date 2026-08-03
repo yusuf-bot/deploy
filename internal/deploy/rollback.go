@@ -99,7 +99,10 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		AppID:   app.ID,
 		Version: targetVersion,
 		Status:  types.DeployStatusDeploying,
-		Port:    app.Port + 1,
+		// Stable port: rollback reuses the app's current port. The old container
+		// is stopped before the new one is created (see below), so the port is
+		// actually free and never drifts across rollback cycles.
+		Port:    app.Port,
 	}
 	if _, err := state.CreateDeployment(d.db, dep); err != nil {
 		return nil, fmt.Errorf("create deployment: %w", err)
@@ -112,8 +115,19 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	}
 	mergedEnv := state.MergeEnv(app.Env, secrets)
 
-	// Create new container
-	hostPort := app.Port + 1
+	// Stop the old container FIRST so its port is freed and the new container
+	// can bind the app's stable port. It is only stopped (not removed) so a
+	// failed health check can bring it back by restarting it.
+	if oldContainerID != "" {
+		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
+			state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
+				fmt.Sprintf("stop old container: %v", err))
+			return nil, fmt.Errorf("stop old container: %w", err)
+		}
+	}
+
+	// Create new container on the app's stable port (reused across rollbacks).
+	hostPort := app.Port
 	svcPort := hostPort
 	if len(cfg.Ports) > 0 {
 		svcPort = cfg.Ports[0].Container
@@ -195,18 +209,9 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 		return nil, fmt.Errorf("health check: %w", err)
 	}
 
-	// Update Caddy manager FIRST (new port before old container stops)
-	if d.caddyManager != nil && d.caddyManager.IsRunning() {
-		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
-			return nil, fmt.Errorf("caddy port update: %w", err)
-		}
-	}
-
-	// Stop and remove old container
+	// Remove the old container (already stopped above; keep it around until the
+	// new container passed its health check so a failure can restart it).
 	if oldContainerID != "" {
-		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
-			log.Printf("warning: stop old container %s: %v", oldContainerID[:12], err)
-		}
 		if err := d.runner.RemoveContainer(ctx, oldContainerID); err != nil {
 			log.Printf("warning: remove old container %s: %v", oldContainerID[:12], err)
 		}
@@ -224,6 +229,9 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	}
 	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
+	}
+	if err := state.UpdateAppServicePort(tx, appName, svcPort); err != nil {
+		return nil, fmt.Errorf("update app service port: %w", err)
 	}
 	if err := state.UpdateAppStatus(tx, appName, types.StatusRunning); err != nil {
 		return nil, fmt.Errorf("update app status: %w", err)
@@ -246,6 +254,14 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	// Update port allocation
 	if err := state.UpdatePortAllocation(d.db, appName, hostPort); err != nil {
 		log.Printf("warning: update port allocation: %v", err)
+	}
+
+	// Conf from truth: regenerate every site snippet from the app's actual
+	// port/status in the DB (just committed above), never from the old port.
+	if d.caddyManager != nil && d.caddyManager.IsRunning() {
+		if err := d.caddyManager.Reload(); err != nil {
+			return nil, fmt.Errorf("caddy reload from state: %w", err)
+		}
 	}
 
 	log.Printf("rolled back %s to %s (container=%s, port=%d)", appName, targetVersion, containerID[:12], hostPort)

@@ -206,6 +206,35 @@ func TestUpdateAppContainer(t *testing.T) {
 	}
 }
 
+func TestUpdateAppServicePort(t *testing.T) {
+	db := setupTestDB(t)
+	app := &types.App{
+		ID:    uuid.New().String(),
+		Name:  "svc-port",
+		Port:  20018,
+		Image: "alpine:latest",
+	}
+	CreateApp(db, app)
+
+	if err := UpdateAppServicePort(db, "svc-port", 3000); err != nil {
+		t.Fatalf("UpdateAppServicePort: %v", err)
+	}
+
+	got, err := GetAppByName(db, "svc-port")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected app, got nil")
+	}
+	if got.ServicePort != 3000 {
+		t.Errorf("expected ServicePort 3000, got %d", got.ServicePort)
+	}
+	if got.Port != 20018 {
+		t.Errorf("expected host Port 20018 unchanged, got %d", got.Port)
+	}
+}
+
 func TestDeleteApp(t *testing.T) {
 	db := setupTestDB(t)
 	app := &types.App{

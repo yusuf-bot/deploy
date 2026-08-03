@@ -221,7 +221,10 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		Version:     buildResult.Version,
 		ImageDigest: digest,
 		Status:      types.DeployStatusDeploying,
-		Port:        app.Port + 1,
+		// Stable port: the deployment reuses the app's current port. The old
+		// container is stopped before the new one is created (see below), so
+		// the port is actually free and never drifts across deploy cycles.
+		Port:        app.Port,
 	}
 	if _, err := state.CreateDeployment(d.db, dep); err != nil {
 		return nil, fmt.Errorf("create deployment: %w", err)
@@ -242,8 +245,21 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 	mergedEnv := state.MergeEnv(mergedAppEnv, secrets)
 
-	// 7. Start new container on appPort+1
-	hostPort := app.Port + 1
+	// 7. Stop the old container FIRST so its port is freed and the new
+	// container can bind the app's stable port. It is only stopped (not
+	// removed) so a failed health check can bring it back by restarting it.
+	if oldContainerID != "" {
+		progress(types.ProgressEvent{Step: "stop", Message: "Stopping old container...", Status: "running"})
+		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
+			state.UpdateDeploymentStatus(d.db, depID, types.DeployStatusFailed,
+				fmt.Sprintf("stop old container: %v", err))
+			return nil, fmt.Errorf("stop old container: %w", err)
+		}
+		progress(types.ProgressEvent{Step: "stop", Message: "Old container stopped", Status: "done"})
+	}
+
+	// 8. Start new container on the app's stable port (reused across deploys).
+	hostPort := app.Port
 	svcPort := hostPort
 	if len(cfg.Ports) > 0 {
 		svcPort = cfg.Ports[0].Container
@@ -268,7 +284,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 	progress(types.ProgressEvent{Step: "start", Message: "Container started", Status: "done"})
 
-	// 8. Health check new container
+	// 9. Health check new container
 	healthPath := "/"
 	if cfg.Health.Path != "" {
 		healthPath = cfg.Health.Path
@@ -331,28 +347,18 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 	progress(types.ProgressEvent{Step: "health", Message: "Health check passed", Status: "done"})
 
-	progress(types.ProgressEvent{Step: "caddy", Message: "Updating Caddy proxy...", Status: "running"})
-	// 9. Update Caddy manager FIRST (new port before old container stops)
-	if d.caddyManager != nil && d.caddyManager.IsRunning() {
-		if err := d.caddyManager.UpdatePortSnippets(app.ID, oldPort, hostPort); err != nil {
-			return nil, fmt.Errorf("caddy port update: %w", err)
-		}
-		progress(types.ProgressEvent{Step: "caddy", Message: "Caddy updated", Status: "done"})
-	}
-
-	progress(types.ProgressEvent{Step: "cleanup", Message: "Stopping old container...", Status: "running"})
-	// 10. Stop old container and remove it (zero-downtime swap)
+	// 10. Remove the old container (already stopped above; keep it around until
+	// the new container passed its health check so a failure can restart it).
 	if oldContainerID != "" {
-		if err := d.runner.StopContainer(ctx, oldContainerID); err != nil {
-			log.Printf("warning: stop old container %s: %v", oldContainerID[:12], err)
-		}
-		progress(types.ProgressEvent{Step: "cleanup", Message: "Old container stopped", Status: "done"})
+		progress(types.ProgressEvent{Step: "cleanup", Message: "Removing old container...", Status: "running"})
 		if err := d.runner.RemoveContainer(ctx, oldContainerID); err != nil {
 			log.Printf("warning: remove old container %s: %v", oldContainerID[:12], err)
 		}
+		progress(types.ProgressEvent{Step: "cleanup", Message: "Old container removed", Status: "done"})
 	}
 
 	// 11. Update app record with new container ID (atomic transaction)
+	// (port stays the same)
 	tx, err := d.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
@@ -364,6 +370,9 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 	if err := state.UpdateAppPort(tx, appName, hostPort); err != nil {
 		return nil, fmt.Errorf("update app port: %w", err)
+	}
+	if err := state.UpdateAppServicePort(tx, appName, svcPort); err != nil {
+		return nil, fmt.Errorf("update app service port: %w", err)
 	}
 	if err := state.UpdateAppStatus(tx, appName, types.StatusRunning); err != nil {
 		return nil, fmt.Errorf("update app status: %w", err)
@@ -387,8 +396,15 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 		log.Printf("warning: update port allocation: %v", err)
 	}
 
-	// Register domains from deploy.yml
+	// 13. Conf from truth: regenerate every site snippet from the app's actual
+	// port/status in the DB (just committed above), never from the old or the
+	// staged port. Then register any deploy.yml domains not already present.
 	if d.caddyManager != nil && d.caddyManager.IsRunning() {
+		progress(types.ProgressEvent{Step: "caddy", Message: "Regenerating Caddy config from state...", Status: "running"})
+		if err := d.caddyManager.Reload(); err != nil {
+			return nil, fmt.Errorf("caddy reload from state: %w", err)
+		}
+		progress(types.ProgressEvent{Step: "caddy", Message: "Caddy config regenerated", Status: "done"})
 		for _, domain := range cfg.Domains {
 			// Domains from deploy.yml use the cert-based path (httpOnly=false).
 			if err := d.caddyManager.AddDomainSnippet(appName, domain, hostPort, false); err != nil {

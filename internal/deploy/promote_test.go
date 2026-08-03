@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"deploy/internal/caddyfile"
 	"deploy/internal/runner"
 	"deploy/internal/state"
 	"deploy/internal/types"
@@ -256,6 +257,28 @@ func TestPromoteSuccess(t *testing.T) {
 	}
 }
 
+func TestPromotePersistsServicePort(t *testing.T) {
+	mocks, appDir := setupDeployTest(t)
+	dep := newTestDeployer(mocks)
+
+	resp, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if resp == nil || resp.NewContainerID == "" {
+		t.Fatal("expected non-empty container ID")
+	}
+
+	// deploy.yml declares container: 80; promote must persist it as service_port.
+	app, err := state.GetAppByName(mocks.db, "test-app")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if app.ServicePort != 80 {
+		t.Errorf("expected persisted ServicePort 80, got %d", app.ServicePort)
+	}
+}
+
 func TestPromotePassesNetworkToContainer(t *testing.T) {
 	mocks, appDir := setupDeployTest(t)
 	dep := newTestDeployer(mocks)
@@ -430,5 +453,138 @@ func TestPromoteAppNotFound(t *testing.T) {
 	_, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "nonexistent", ".", nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent app")
+	}
+}
+
+
+// TestPromoteKeepsPortStableAcrossDeploys verifies that two consecutive
+// deploys reuse the app's current port instead of allocating a new one.
+func TestPromoteKeepsPortStableAcrossDeploys(t *testing.T) {
+	mocks, appDir := setupDeployTest(t)
+	dep := newTestDeployer(mocks)
+
+	app, _ := state.GetAppByName(mocks.db, "test-app")
+	if app.Port == 0 {
+		t.Fatal("expected test app to have a port")
+	}
+	wantPort := app.Port
+
+	// First deploy (no old container): creates the first container on the
+	// app's port.
+	resp1, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
+	if err != nil {
+		t.Fatalf("Promote #1: %v", err)
+	}
+	if resp1.Port != wantPort {
+		t.Fatalf("deploy #1 expected port %d, got %d", wantPort, resp1.Port)
+	}
+
+	// Second deploy: the app now has a running container on its port. It must
+	// reuse the same port (stop old -> create new on the same port).
+	resp2, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil)
+	if err != nil {
+		t.Fatalf("Promote #2: %v", err)
+	}
+	if resp2.Port != wantPort {
+		t.Errorf("deploy #2 expected stable port %d, got %d", wantPort, resp2.Port)
+	}
+	if resp1.NewContainerID == resp2.NewContainerID {
+		t.Error("expected a fresh container for the second deploy")
+	}
+
+	// The old container from the first deploy must have been removed.
+	if _, err := mocks.runner.InspectContainer(context.Background(), resp1.NewContainerID); err == nil {
+		t.Error("expected first-deploy container to be removed after the second deploy")
+	}
+
+	// DB state must reflect the stable port.
+	appAfter, _ := state.GetAppByName(mocks.db, "test-app")
+	if appAfter.Port != wantPort {
+		t.Errorf("expected app port %d in DB, got %d", wantPort, appAfter.Port)
+	}
+	allocPort, err := state.GetPort(mocks.db, "test-app")
+	if err != nil {
+		t.Fatalf("GetPort: %v", err)
+	}
+	if allocPort != wantPort {
+		t.Errorf("expected port allocation %d, got %d", wantPort, allocPort)
+	}
+
+	// Every deployment must record the stable port.
+	deps, err := state.ListDeploymentsByApp(mocks.db, app.ID)
+	if err != nil {
+		t.Fatalf("ListDeploymentsByApp: %v", err)
+	}
+	if len(deps) < 2 {
+		t.Fatalf("expected at least 2 deployments, got %d", len(deps))
+	}
+	for _, d := range deps {
+		if d.Port != wantPort {
+			t.Errorf("deployment %s recorded port %d, want %d", d.Version, d.Port, wantPort)
+		}
+	}
+}
+
+// TestPromoteConfFromTruth verifies that after a deploy the Caddy site
+// snippet is regenerated from the app's actual port in state (conf-from-truth)
+// rather than a stale previous port.
+func TestPromoteConfFromTruth(t *testing.T) {
+	mocks, appDir := setupDeployTest(t)
+
+	app, _ := state.GetAppByName(mocks.db, "test-app")
+	if err := state.CreateDomain(mocks.db, &types.Domain{AppID: app.ID, Domain: "truth.example.com"}); err != nil {
+		t.Fatalf("CreateDomain: %v", err)
+	}
+
+	// Real CaddyManager backed by a fake caddy binary so Reload runs and the
+	// snippet files land in the temp sites dir.
+	tmpDir := t.TempDir()
+	fakeCaddy := filepath.Join(tmpDir, "fake-caddy-conf.sh")
+	script := "#!/bin/sh\necho \"Caddy starting\"\nwhile [ 1 ]; do sleep 1; done\n"
+	if err := os.WriteFile(fakeCaddy, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile fake caddy: %v", err)
+	}
+
+	cm := caddyfile.NewCaddyManager(mocks.db, tmpDir)
+	cm.SetCaddyBin(fakeCaddy)
+	if err := cm.Start(); err != nil {
+		t.Fatalf("CaddyManager.Start: %v", err)
+	}
+	defer cm.Stop()
+
+	dep := newTestDeployer(mocks)
+	dep.SetCaddyManager(cm)
+
+	if _, err := dep.Promote(context.Background(), &types.PromoteRequest{}, "test-app", appDir, nil); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+
+	// The snippet must proxy to the app's actual port in state (8080), never
+	// a staged port or a stale previous one.
+	sitesDir := filepath.Join(tmpDir, "sites")
+	entries, err := os.ReadDir(sitesDir)
+	if err != nil {
+		t.Fatalf("ReadDir sites: %v", err)
+	}
+	var found bool
+	for _, e := range entries {
+		if !strings.Contains(e.Name(), "truth-example-com") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sitesDir, e.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile snippet: %v", err)
+		}
+		content := string(data)
+		if !strings.Contains(content, "localhost:8080") {
+			t.Errorf("snippet must proxy to the app's state port 8080, got:\n%s", content)
+		}
+		if strings.Contains(content, "localhost:8081") {
+			t.Errorf("snippet must not use a staged/stale port 8081:\n%s", content)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected snippet for truth.example.com in %s", sitesDir)
 	}
 }
