@@ -118,7 +118,7 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
 
 - ~~[x] **Zone extraction**: For domains like `blog.example.com`, extract zone (`example.com`) automatically for all 6 DNS providers.~~ — **REMOVED in `7d4684ec`**
 - ~~[x] **DNS provider tests**: Mock HTTP tests for all 6 providers covering API errors, timeouts, edge cases.~~ — **REMOVED in `7d4684ec`**
-- [ ] **Integration tests**: Docker-based tests for promote, rollback, dev container lifecycle.
+- [x] **Integration tests**: Docker-based tests for promote, rollback, dev container lifecycle.
 - [x] **Graceful shutdown**: SIGTERM/SIGINT handling — drain requests, save state, stop containers.
 - ~~[x] **HTTP status code checks**: All DNS provider API calls validate HTTP status codes properly.~~ — **REMOVED in `7d4684ec`**
 
@@ -152,7 +152,7 @@ These are the current top priority — fix before any further feature work:
 1. **`deploy up` writes the PREVIOUS port into the Caddy site conf** — stale/off-by-one; occasionally drops the conf entirely. Caddy SIGUSR1 reload is "not implemented" in the current build → needs a deterministic conf rewrite + restart. Reproduced twice (chessler empty domain, deploy-website 502).
 2. **`deploy start` / `deploy restart` broken** — they `docker pull <app>:latest` (registry) after stopping; local-only images fail → must fall back to the local image or skip the pull.
 3. **Port drift** — every deploy allocates a NEW port (20016→17→18) instead of reusing the app's current port.
-4. **Integration tests** — still the only unchecked v0.3.0 item.
+4. ~~**Integration tests**~~ — **DONE** in `internal/integration/` (Docker-based promote/rollback/prune/dev lifecycle tests, hermetic `DEPLOY_DATA_DIR`).
 5. **`rollback_strategy=tarball|tag`** — decision made, not yet implemented.
 
 ## v0.4.0 — Startup features
