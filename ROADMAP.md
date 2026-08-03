@@ -97,7 +97,7 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
   - Print next steps
 - [x] **Init wizard**:
   - Detect Docker version, Caddy presence
-  - Prompt for DNS provider + API token (skippable, all 6 providers)
+  - ~~Prompt for DNS provider + API token (skippable, all 6 providers)~~ — **REMOVED in `7d4684ec`** (no DNS automation; domains via `deploy domain add`, DNS done manually/Cloudflare once)
   - Prompt for auto-start, systemd setup
   - Show summary before applying
   - Print next steps
@@ -110,11 +110,17 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
 
 ### Phase 5: DNS & testing (P2)
 
-- [x] **Zone extraction**: For domains like `blog.example.com`, extract zone (`example.com`) automatically for all 6 DNS providers.
-- [x] **DNS provider tests**: Mock HTTP tests for all 6 providers covering API errors, timeouts, edge cases.
+> **DNS automation REMOVED** in `7d4684ec` (v0.3.0): the 6 DNS provider integrations
+> (cloudflare, digitalocean, hetzner, linode, porkbun, vultr) and the DNS sync/list
+> commands were deleted. The replacement is a deterministic Caddyfile — domains must
+> be added via `deploy domain add`, and DNS records are configured manually (once, at
+> Cloudflare or the registrar). Struck-through items are obsolete, not done.
+
+- ~~[x] **Zone extraction**: For domains like `blog.example.com`, extract zone (`example.com`) automatically for all 6 DNS providers.~~ — **REMOVED in `7d4684ec`**
+- ~~[x] **DNS provider tests**: Mock HTTP tests for all 6 providers covering API errors, timeouts, edge cases.~~ — **REMOVED in `7d4684ec`**
 - [ ] **Integration tests**: Docker-based tests for promote, rollback, dev container lifecycle.
 - [x] **Graceful shutdown**: SIGTERM/SIGINT handling — drain requests, save state, stop containers.
-- [x] **HTTP status code checks**: All DNS provider API calls validate HTTP status codes properly.
+- ~~[x] **HTTP status code checks**: All DNS provider API calls validate HTTP status codes properly.~~ — **REMOVED in `7d4684ec`**
 
 ### Phase 6: Future
 
@@ -126,6 +132,29 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
 
 **Decision**: Keep tarballs, add `deploy config set rollback_strategy=tarball|tag` to let users choose. Default is tarball for safety. Tags option is faster for solo devs who don't prune aggressively.
 
+## Shipped in v0.3.0
+
+These shipped in v0.3.0 / v0.3.x but were never recorded in the roadmap:
+
+- **`network:` field in deploy.yml** — join existing Docker networks (e.g. a shared DB container)
+- **`DEPLOY_DATA_DIR` env override** — relocatable data directory (moved to `/mnt/bigvolume` on this host)
+- **HTTP-only domains support** — no TLS block emitted when a domain is outside certificate coverage
+- **Caddy QUIC patch** — stable reload (QUIC disabled, durable dual-binding with origin cert)
+- **zstd tarball compression** — ~67% smaller images; legacy `.tar` archives remain readable
+- **`deploy prune` command** — keep N images per app, with `--dry-run`
+- **Secrets injected on ALL container-start paths** — previously promote-only
+- **promote → deploy messaging cleanup** — `deploy up` is the primary command
+
+## v0.3.x — open core-loop bugs (immediate priority)
+
+These are the current top priority — fix before any further feature work:
+
+1. **`deploy up` writes the PREVIOUS port into the Caddy site conf** — stale/off-by-one; occasionally drops the conf entirely. Caddy SIGUSR1 reload is "not implemented" in the current build → needs a deterministic conf rewrite + restart. Reproduced twice (chessler empty domain, deploy-website 502).
+2. **`deploy start` / `deploy restart` broken** — they `docker pull <app>:latest` (registry) after stopping; local-only images fail → must fall back to the local image or skip the pull.
+3. **Port drift** — every deploy allocates a NEW port (20016→17→18) instead of reusing the app's current port.
+4. **Integration tests** — still the only unchecked v0.3.0 item.
+5. **`rollback_strategy=tarball|tag`** — decision made, not yet implemented.
+
 ## v0.4.0 — Startup features
 
 **Goal**: 3-15 person teams can use deploy for staging + production with CI/CD integration. Preview deploys for every PR.
@@ -136,7 +165,7 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
 - [ ] **Project-level env groups**: Shared env vars across multiple services in a project.
 - [ ] **Team auth**: OIDC/OAuth2 for the socket API. Single sign-on via GitHub/Google.
 - [ ] **Structured JSON logging**: All daemon output as JSON for log aggregation.
-- [ ] **Documentation site**: Mintlify docs with Getting Started, Guides, Reference, Troubleshooting.
+- [x] **Documentation site**: Live at deploy.openexplorer.xyz with Nextra docs (originally planned as Mintlify) — Getting Started, Guides, Reference, Troubleshooting.
 
 ## v0.5.0 — SME features
 
@@ -171,8 +200,8 @@ These are decisions we've discussed and committed to. Future agents should NOT r
 | Socket location | `/var/run/deploy/deploy.sock` (not `~/.deploy/`) | Standard Unix location, avoids permission issues with user home dirs |
 | Socket permissions | 0770, `deploy` group | Group-based access control, daemon runs as root |
 | Dockerfile generation | `deploy scaffold` auto-detects stack and generates WORKING Dockerfile | Users shouldn't need to write Dockerfiles for common stacks |
-| DNS providers | Keep all 6, add tests + zone extraction | Cloudflare covers 80%, others cover long tail. Test coverage makes them maintainable |
-| DNS in init | Prompted but skippable | Users may not have a domain yet |
+| DNS providers | ~~Keep all 6, add tests + zone extraction~~ — **REMOVED in `7d4684ec`** | DNS automation is gone. Deterministic Caddyfile; domains via `deploy domain add`, DNS configured manually (Cloudflare/registrar once) |
+| DNS in init | ~~Prompted but skippable~~ — **REMOVED in `7d4684ec`** | No DNS provider prompt — init no longer touches DNS |
 | Install script | Warns if Docker missing, does NOT auto-install | Too many distro-specific edge cases. User installs Docker separately |
 | Promote flow | Build → start new on unused port → health check → update Caddy → stop old | Zero downtime proven pattern. Old container never killed before new one is healthy |
 | Port allocation | SQLite table pool + Docker real usage check | No more `app.Port + 1` collisions |
