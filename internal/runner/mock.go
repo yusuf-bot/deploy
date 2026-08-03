@@ -17,6 +17,21 @@ type MockDocker struct {
 	Containers   map[string]*mockContainer
 	ShouldFail   map[string]error // keyed by "CreateContainer", "StartContainer", etc.
 	CreatedCount int
+
+	// ExecOutput is the canned combined stdout+stderr returned by
+	// ExecContainer. Defaults to "mock exec output\n".
+	ExecOutput string
+	// ExecExitCode is the exit code reported by ExecContainer.
+	ExecExitCode int
+	// ExecCalls records every ExecContainer invocation.
+	ExecCalls []ExecCall
+}
+
+// ExecCall records a single ExecContainer invocation.
+type ExecCall struct {
+	ContainerID string
+	User        string
+	Cmd         []string
 }
 
 type mockContainer struct {
@@ -90,9 +105,9 @@ func (m *MockDocker) CreateContainer(ctx context.Context, app *types.App, versio
 			Port:        app.Port,
 			ServicePort: app.ServicePort,
 			Env:         app.Env,
-			Dev:   app.Dev,
-			Version: version,
-			Network: app.Network,
+			Dev:         app.Dev,
+			Version:     version,
+			Network:     app.Network,
 		},
 		Running: false,
 		Logs:    "",
@@ -290,4 +305,40 @@ func (m *MockDocker) FindContainerByLabel(ctx context.Context, key, value string
 		}
 	}
 	return "", nil
+}
+
+// ExecContainer implements Interface.
+func (m *MockDocker) ExecContainer(ctx context.Context, containerID, user string, cmd []string) (*ExecResult, error) {
+	if err := m.shouldFail("ExecContainer"); err != nil {
+		return nil, err
+	}
+
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+
+	c, ok := m.Containers[containerID]
+	if !ok {
+		return nil, fmt.Errorf("container %s not found", containerID)
+	}
+	if !c.Running {
+		return nil, fmt.Errorf("container %s is not running", containerID)
+	}
+
+	m.ExecCalls = append(m.ExecCalls, ExecCall{
+		ContainerID: containerID,
+		User:        user,
+		Cmd:         append([]string(nil), cmd...),
+	})
+
+	output := m.ExecOutput
+	if output == "" {
+		output = "mock exec output\n"
+	}
+	code := m.ExecExitCode
+	return &ExecResult{
+		Output: io.NopCloser(strings.NewReader(output)),
+		Wait: func() (int, error) {
+			return code, nil
+		},
+	}, nil
 }

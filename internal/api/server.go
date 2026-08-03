@@ -117,6 +117,7 @@ func (s *Server) registerRoutes() {
 	mux.HandleFunc("POST /api/v1/apps/{name}/start", s.handleStartApp)
 	mux.HandleFunc("POST /api/v1/apps/{name}/stop", s.handleStopApp)
 	mux.HandleFunc("GET /api/v1/apps/{name}/logs", s.handleGetLogs)
+	mux.HandleFunc("POST /api/v1/apps/{name}/exec", s.handleExec)
 
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.handleGetJob)
 

@@ -9,12 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"deploy/internal/runner"
 	"deploy/internal/caddyfile"
 	"deploy/internal/deploy"
+	"deploy/internal/runner"
 	"deploy/internal/scheduler"
 	"deploy/internal/state"
 	"deploy/internal/types"
@@ -895,7 +896,6 @@ func TestListDomainsGlobal(t *testing.T) {
 	}
 }
 
-
 func TestRemoveDomain(t *testing.T) {
 	_, socketPath := startTestServer(t)
 	defer os.Remove(socketPath)
@@ -1052,7 +1052,6 @@ func TestContainerLogsReturnsEmptyForNoContainer(t *testing.T) {
 	}
 }
 
-
 // TestStartSkipsRegistryPull verifies that start does not attempt a registry
 // pull (deploy images are local-only) and runs the local image instead.
 func TestStartSkipsRegistryPull(t *testing.T) {
@@ -1196,5 +1195,166 @@ func TestDevStartSkipsRegistryPull(t *testing.T) {
 	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/dev-skip/dev/start", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("dev start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+// --- Exec ---
+
+func TestExecStreamsOutputAndExitCode(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create + start an app so it has a running container.
+	body := types.CreateAppRequest{Name: "exec-test", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-test/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Fetch the app to learn the running container ID.
+	resp = httpDo(t, socketPath, "GET", "/api/v1/apps/exec-test", nil)
+	var app types.App
+	if err := json.Unmarshal([]byte(readBody(t, resp)), &app); err != nil {
+		t.Fatalf("unmarshal app: %v", err)
+	}
+	if app.ContainerID == "" {
+		t.Fatal("expected running container ID")
+	}
+
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	mock.ExecOutput = "line one\nline two\n"
+	mock.ExecExitCode = 7
+	mock.Mu.Unlock()
+
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]interface{}{"cmd": []string{"echo", "hi"}, "user": ""})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-test/exec", &buf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("exec: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	stream := readBody(t, resp)
+
+	if !strings.Contains(stream, "data: line one") || !strings.Contains(stream, "data: line two") {
+		t.Errorf("expected streamed output lines, got:\n%s", stream)
+	}
+	if !strings.Contains(stream, "event: exit") || !strings.Contains(stream, "data: 7") {
+		t.Errorf("expected exit event with code 7, got:\n%s", stream)
+	}
+
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	if len(mock.ExecCalls) != 1 {
+		t.Fatalf("expected 1 exec call, got %d", len(mock.ExecCalls))
+	}
+	call := mock.ExecCalls[0]
+	if call.ContainerID != app.ContainerID {
+		t.Errorf("expected exec on container %q, got %q", app.ContainerID, call.ContainerID)
+	}
+	if len(call.Cmd) != 2 || call.Cmd[0] != "echo" || call.Cmd[1] != "hi" {
+		t.Errorf("unexpected cmd: %v", call.Cmd)
+	}
+	if call.User != "" {
+		t.Errorf("expected empty user, got %q", call.User)
+	}
+}
+
+func TestExecPassesUserFlag(t *testing.T) {
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	body := types.CreateAppRequest{Name: "exec-user", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-user/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]interface{}{"cmd": []string{"id"}, "user": "root"})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-user/exec", &buf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("exec: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	readBody(t, resp)
+
+	mock := server.runner.(*runner.MockDocker)
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	if len(mock.ExecCalls) != 1 {
+		t.Fatalf("expected 1 exec call, got %d", len(mock.ExecCalls))
+	}
+	if mock.ExecCalls[0].User != "root" {
+		t.Errorf("expected user root, got %q", mock.ExecCalls[0].User)
+	}
+}
+
+func TestExecRejectsMissingApp(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(map[string]interface{}{"cmd": []string{"ls"}})
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps/nope/exec", &buf)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestExecRejectsWhenNotRunning(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Create the app but never start it -> no container.
+	body := types.CreateAppRequest{Name: "exec-stopped", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]interface{}{"cmd": []string{"ls"}})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-stopped/exec", &buf)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}
+
+func TestExecRejectsEmptyCmd(t *testing.T) {
+	_, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	// Start an app first so we get past the not-running guard.
+	body := types.CreateAppRequest{Name: "exec-empty", Port: 8080, Image: "nginx:latest"}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(body)
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", &buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-empty/start?wait=true", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	buf.Reset()
+	json.NewEncoder(&buf).Encode(map[string]interface{}{"cmd": []string{}})
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/exec-empty/exec", &buf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
 	}
 }

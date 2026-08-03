@@ -78,6 +78,7 @@ deploy domain add myapp example.com
 - `deploy config set/get` — Persistent daemon settings
 - `deploy usage` — Container CPU/memory
 - `deploy ssh` — Interactive shell into running containers
+- `deploy exec` — Run a command in a running container (docker exec, non-interactive)
 - `deploy uninstall` — Remove everything cleanly
 
 ### CI/CD

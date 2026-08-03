@@ -8,11 +8,13 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"deploy/internal/types"
 
 	"github.com/docker/go-units"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -331,4 +333,95 @@ func (d *DockerRunner) HealthCheck(ctx context.Context, containerID string, port
 	}
 
 	return fmt.Errorf("health check failed after %d retries", retries)
+}
+
+// ExecContainer implements Interface using the Docker SDK exec API.
+func (d *DockerRunner) ExecContainer(ctx context.Context, containerID, user string, cmd []string) (*ExecResult, error) {
+	if containerID == "" {
+		return nil, fmt.Errorf("exec: container ID is required")
+	}
+	if len(cmd) == 0 {
+		return nil, fmt.Errorf("exec: command is required")
+	}
+
+	createResp, err := d.cli.ExecCreate(ctx, containerID, client.ExecCreateOptions{
+		User:         user,
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create exec: %w", err)
+	}
+
+	attachResp, err := d.cli.ExecAttach(ctx, createResp.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("attach exec: %w", err)
+	}
+
+	// Demultiplex the multiplexed stdout+stderr stream into one combined
+	// output. The hijacked connection is closed when the returned reader is
+	// closed, which also unblocks this goroutine on client disconnect.
+	pr, pw := io.Pipe()
+	go func() {
+		_, cpErr := stdcopy.StdCopy(pw, pw, attachResp.Reader)
+		if cpErr != nil {
+			pw.CloseWithError(cpErr)
+			return
+		}
+		pw.Close()
+	}()
+
+	var (
+		once    sync.Once
+		code    int
+		waitErr error
+	)
+	wait := func() (int, error) {
+		once.Do(func() {
+			code, waitErr = d.execExitCode(ctx, createResp.ID)
+		})
+		return code, waitErr
+	}
+
+	return &ExecResult{
+		Output: &execOutput{pr: pr, closeFn: attachResp.Close},
+		Wait:   wait,
+	}, nil
+}
+
+// execOutput adapts the demultiplexed pipe so closing it also closes the
+// hijacked exec connection.
+type execOutput struct {
+	pr      *io.PipeReader
+	closeFn func()
+}
+
+func (e *execOutput) Read(p []byte) (int, error) { return e.pr.Read(p) }
+func (e *execOutput) Close() error {
+	e.closeFn()
+	return e.pr.Close()
+}
+
+// execExitCode resolves an exec process's exit code, polling briefly for the
+// exec to transition from running to exited.
+func (d *DockerRunner) execExitCode(ctx context.Context, execID string) (int, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := d.cli.ExecInspect(ctx, execID, client.ExecInspectOptions{})
+		if err != nil {
+			return 0, fmt.Errorf("inspect exec: %w", err)
+		}
+		if !info.Running {
+			return info.ExitCode, nil
+		}
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("exec %s still running", execID)
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
 }

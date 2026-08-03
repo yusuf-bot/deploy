@@ -49,6 +49,23 @@ type Interface interface {
 
 	// FindDevContainer finds a dev container by app name (checks deploy.dev=true label).
 	FindDevContainer(ctx context.Context, appName string) (string, error)
+
+	// ExecContainer runs cmd non-interactively inside the running container,
+	// optionally as user (empty string = container default). It returns a
+	// stream of the combined stdout+stderr output, or an error if the
+	// container is not running.
+	ExecContainer(ctx context.Context, containerID, user string, cmd []string) (*ExecResult, error)
+}
+
+// ExecResult carries the streamed output of a container exec plus a Wait
+// function that resolves the process exit code once the stream is consumed.
+type ExecResult struct {
+	// Output streams the combined stdout+stderr of the exec process.
+	// Consume until EOF, then Close to release the underlying connection.
+	Output io.ReadCloser
+	// Wait returns the process exit code. Only valid after Output has been
+	// fully consumed (EOF reached).
+	Wait func() (int, error)
 }
 
 // ContainerState holds key container runtime state.
@@ -67,5 +84,5 @@ type ContainerInfo struct {
 	Status string
 	AppID  string
 	Port   int
-	IsDev  bool   `json:"is_dev,omitempty"`
+	IsDev  bool `json:"is_dev,omitempty"`
 }

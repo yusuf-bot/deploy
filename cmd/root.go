@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -45,7 +46,12 @@ var rootCmd = &cobra.Command{
 
 // Execute adds all child commands to the root command.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	if err != nil {
+		var ece *execExitError
+		if errors.As(err, &ece) {
+			os.Exit(ece.code)
+		}
 		os.Exit(1)
 	}
 }

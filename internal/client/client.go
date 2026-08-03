@@ -2,15 +2,17 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"bufio"
 	"io"
-	"strings"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"deploy/internal/types"
@@ -387,10 +389,10 @@ func (c *Client) RemoveDomain(appName string, domain string) error {
 
 // ListDomains lists domains for an application, or all if appName is empty.
 func (c *Client) ListDomains(appName string) ([]types.Domain, error) {
-    path := "/api/v1/domains"
-    if appName != "" {
-        path = "/api/v1/apps/" + appName + "/domains"
-    }
+	path := "/api/v1/domains"
+	if appName != "" {
+		path = "/api/v1/apps/" + appName + "/domains"
+	}
 	var result types.ListDomainsResponse
 	if err := c.doRequest("GET", path, nil, &result); err != nil {
 		return nil, err
@@ -438,7 +440,9 @@ func (c *Client) SetConfig(key, value string) error {
 
 // CreateBackup creates a full system backup and returns the path to the archive.
 func (c *Client) CreateBackup() (string, error) {
-	var result struct{ Path string `json:"path"` }
+	var result struct {
+		Path string `json:"path"`
+	}
 	if err := c.doRequest("POST", "/api/v1/backup", nil, &result); err != nil {
 		return "", err
 	}
@@ -474,6 +478,106 @@ func (c *Client) Prune(appName string, keep int, dryRun bool) (*types.PruneRespo
 		return nil, err
 	}
 	return &result, nil
+}
+
+// ExecStream streams the output of a container exec and resolves its exit code.
+type ExecStream struct {
+	// Output streams the combined stdout+stderr lines of the exec process.
+	// Consume until EOF, then Close.
+	Output io.ReadCloser
+	// ExitCode returns the process exit code. Only valid after Output has
+	// been fully consumed.
+	ExitCode func() (int, error)
+}
+
+// Exec runs a non-interactive command inside an app's running container and
+// returns a stream of its combined stdout+stderr output. The command runs via
+// docker exec; pass user as "" to use the container default.
+func (c *Client) Exec(appName string, user string, cmd []string) (*ExecStream, error) {
+	body, err := json.Marshal(map[string]interface{}{"cmd": cmd, "user": user})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	path := "/api/v1/apps/" + appName + "/exec"
+	req, err := http.NewRequest("POST", "http://unix"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		var errResp types.ErrorResponse
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Code != "" {
+			return nil, fmt.Errorf("%s: %s", errResp.Code, errResp.Detail)
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	pr, pw := io.Pipe()
+	stream := &ExecStream{Output: pr}
+	var mu sync.Mutex
+	exitCode := 0
+	var exitErr error
+	done := make(chan struct{})
+
+	stream.ExitCode = func() (int, error) {
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		return exitCode, exitErr
+	}
+
+	go func() {
+		defer pw.Close()
+		defer close(done)
+
+		scanner := bufio.NewScanner(resp.Body)
+		event := ""
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data := strings.TrimPrefix(line, "data: ")
+				switch event {
+				case "exit":
+					if code, convErr := strconv.Atoi(strings.TrimSpace(data)); convErr == nil {
+						mu.Lock()
+						exitCode = code
+						mu.Unlock()
+					} else {
+						mu.Lock()
+						exitErr = fmt.Errorf("invalid exit code %q", data)
+						mu.Unlock()
+					}
+				case "error":
+					mu.Lock()
+					exitErr = fmt.Errorf("%s", data)
+					mu.Unlock()
+				default:
+					if _, werr := pw.Write([]byte(data + "\n")); werr != nil {
+						return // reader closed (client cancelled)
+					}
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			mu.Lock()
+			exitErr = err
+			mu.Unlock()
+		}
+	}()
+
+	return stream, nil
 }
 
 // Shutdown tells the daemon to shut down gracefully.
