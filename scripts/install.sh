@@ -115,7 +115,7 @@ download_from_github() {
 # Fall back to the self-hosted asset. Only linux/amd64 has one; every other
 # platform gets a clear "build locally" message instead of a raw curl 404.
 download_from_self_hosted() {
-    if [ "$OS" != "linux" ] || [ "$ARCH" != "amd64" ]; then
+    if [ "$OS" != "linux" ] || { [ "$ARCH" != "amd64" ] && [ "$ARCH" != "arm64" ]; }; then
         err "No self-hosted binary available for $OS/$ARCH (linux/amd64 and linux/arm64 are published)"
         printf "\n%s\n" "Build locally instead:"
         printf "  %s\n" "cd <path-to-deploy-repo>"
