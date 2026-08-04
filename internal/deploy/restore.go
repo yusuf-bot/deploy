@@ -300,10 +300,15 @@ func (d *Deployer) portIsFree(appName string, port int) (bool, error) {
 	return true, nil
 }
 
-// checkPortInUse adapts the deploy package's host-port probe to the signature
+// checkPortInUse reports whether a host port is bound, matching the signature
 // expected by state.AllocatePort.
 func (d *Deployer) checkPortInUse(port int) (bool, error) {
-	return checkPortAvailable(port) != nil, nil
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return true, nil // port bound on the host
+	}
+	ln.Close()
+	return false, nil
 }
 
 // untarGz extracts a tar.gz archive into dst, refusing to write outside dst.
