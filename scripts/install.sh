@@ -26,12 +26,6 @@ VERSION="${1:-latest}"
 LOCAL_BINARY=""
 DEPLOY_DIR="${DEPLOY_DATA_DIR:-$HOME/.deploy}"
 
-# Self-hosted fallback artifacts (linux/amd64 only, built locally)
-SELF_HOSTED_URLS="
-https://deploy.openexplorer.xyz/deploy-linux-${ARCH}.tar.gz
-https://deploy.openexplorer.xyz/deploy_linux_${ARCH}.tar.gz
-"
-
 # Parse --local flag
 for arg in "$@"; do
     case "$arg" in
@@ -82,6 +76,12 @@ case "$ARCH" in
     aarch64|arm64) ARCH="arm64" ;;
     *)          err "Unsupported architecture: $ARCH (amd64/arm64 only)"; exit 1 ;;
 esac
+
+# Self-hosted fallback artifacts (linux/amd64 + arm64, built locally)
+SELF_HOSTED_URLS="
+https://deploy.openexplorer.xyz/deploy-linux-${ARCH}.tar.gz
+https://deploy.openexplorer.xyz/deploy_linux_${ARCH}.tar.gz
+"
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
