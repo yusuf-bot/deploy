@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"deploy/internal/audit"
 	"deploy/internal/types"
 )
 
@@ -615,6 +616,42 @@ func (c *Client) Usage(appName string) (*types.UsageResponse, error) {
 		return nil, err
 	}
 	return &result, nil
+}
+
+// Audit returns audit log entries matching the given filters. Empty filter
+// strings are ignored; since/until are RFC3339 timestamps. limit caps the
+// number of returned entries (0 = server default).
+func (c *Client) Audit(app, action, by, since, until string, limit int) ([]audit.Entry, error) {
+	q := url.Values{}
+	if app != "" {
+		q.Set("app", app)
+	}
+	if action != "" {
+		q.Set("action", action)
+	}
+	if by != "" {
+		q.Set("by", by)
+	}
+	if since != "" {
+		q.Set("since", since)
+	}
+	if until != "" {
+		q.Set("until", until)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+
+	path := "/api/v1/audit"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+
+	var result []audit.Entry
+	if err := c.doRequest("GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // --- Env Group methods ---

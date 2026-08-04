@@ -10,11 +10,13 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"deploy/internal/api"
+	"deploy/internal/audit"
 	"deploy/internal/caddyfile"
 	"deploy/internal/config"
 	"deploy/internal/deploy"
@@ -206,6 +208,22 @@ func runDaemon() error {
 		}
 	}()
 
+	// Audit log retention prune — runs every 24h, honoring the
+	// audit_retention_days setting (0 = keep forever).
+	auditPruneCtx, cancelAuditPrune := context.WithCancel(context.Background())
+	auditPruneDone := make(chan struct{})
+	go func() {
+		defer close(auditPruneDone)
+		runAuditPrune(auditPruneCtx, db)
+	}()
+	defer func() {
+		cancelAuditPrune()
+		select {
+		case <-auditPruneDone:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
 	server := api.NewServer(db, dockerRunner, sched, deployer, cm, config.SocketPath(), masterKey)
 
 	// Scheduled per-app backups. Started only here (after server init), never
@@ -272,6 +290,47 @@ func containerShortID(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// runAuditPrune prunes audit log entries older than the audit_retention_days
+// setting (default 90; 0 = keep forever). It runs once at startup and then
+// every 24h.
+func runAuditPrune(ctx context.Context, db *sql.DB) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	runOnce := func() {
+		days := 90
+		v, err := state.GetSetting(db, "audit_retention_days")
+		if err != nil || v == "" {
+			days = 90
+		} else if n, perr := strconv.Atoi(v); perr != nil {
+			days = 90
+		} else {
+			days = n
+		}
+		if days <= 0 {
+			return // keep forever
+		}
+		n, err := audit.PruneOlderThan(time.Duration(days) * 24 * time.Hour)
+		if err != nil {
+			log.Printf("audit prune: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("audit prune: removed %d entries older than %d days", n, days)
+		}
+	}
+
+	runOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOnce()
+		}
+	}
 }
 
 // runScheduledBackups runs a per-app backup for every app when the

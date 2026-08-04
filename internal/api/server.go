@@ -106,6 +106,9 @@ func (s *Server) registerRoutes() {
 
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
+	// Audit log
+	mux.HandleFunc("GET /api/v1/audit", s.handleAuditList)
+
 	// Usage
 	mux.HandleFunc("GET /api/v1/usage", s.handleUsage)
 

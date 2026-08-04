@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"deploy/internal/audit"
 	"deploy/internal/config"
 	"deploy/internal/build"
 	"deploy/internal/state"
@@ -54,6 +55,60 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Uptime:    time.Since(s.startedAt).Round(time.Second).String(),
 		AppsCount: count,
 	})
+}
+
+// handleAuditList returns audit log entries matching the query filters.
+func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := audit.Filter{
+		App:    q.Get("app"),
+		Action: q.Get("action"),
+		By:     q.Get("by"),
+	}
+
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, BadRequestError("invalid since/until format"))
+			return
+		}
+		f.Since = t
+	}
+	if v := q.Get("until"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, BadRequestError("invalid since/until format"))
+			return
+		}
+		f.Until = t
+	}
+
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, BadRequestError("invalid limit"))
+			return
+		}
+		limit = n
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	f.Limit = limit
+
+	entries, err := audit.ReadFiltered(f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+	if entries == nil {
+		entries = []audit.Entry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // --- Usage ---
@@ -1733,24 +1788,6 @@ func (s *Server) handleAppHealthGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, health)
-}
-
-	app, err := state.GetAppByName(s.db, name)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
-		return
-	}
-	if app == nil {
-		writeError(w, http.StatusNotFound, NotFoundError("app"))
-		return
-	}
-
-	if err := state.ClearAppGroup(s.db, name); err != nil {
-		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("app %q removed from its group", name)})
 }
 
 // --- Shutdown ---

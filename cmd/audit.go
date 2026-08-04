@@ -5,35 +5,28 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
-
-	"deploy/internal/audit"
 
 	"github.com/spf13/cobra"
 )
 
-var auditTail int
+var (
+	auditApp    string
+	auditAction string
+	auditBy     string
+	auditSince  string
+	auditUntil  string
+	auditLimit  int
+)
 
 var auditCmd = &cobra.Command{
-	Use:   "audit [app-name]",
-	Short: "Show recent deploy audit entries",
-	Args:  cobra.MaximumNArgs(1),
+	Use:   "audit",
+	Short: "Search and filter audit log entries",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		entries, err := audit.ReadRecent(auditTail)
+		c := newClient()
+		entries, err := c.Audit(auditApp, auditAction, auditBy, auditSince, auditUntil, auditLimit)
 		if err != nil {
 			return fmt.Errorf("audit: %w", err)
-		}
-
-		// Filter by app name if provided
-		if len(args) > 0 {
-			appName := args[0]
-			var filtered []audit.Entry
-			for _, e := range entries {
-				if e.App == appName {
-					filtered = append(filtered, e)
-				}
-			}
-			entries = filtered
 		}
 
 		if jsonFlag {
@@ -48,23 +41,33 @@ var auditCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "TIME\tACTION\tAPP\tVERSION\tDURATION\tRESULT")
-		fmt.Fprintln(w, "----\t------\t---\t-------\t--------\t------")
+		fmt.Fprintln(w, "TIME\tACTION\tAPP\tBY\tRESULT\tDURATION_MS")
+		fmt.Fprintln(w, "----\t------\t---\t--\t------\t-----------")
 		for _, e := range entries {
-			version := e.Version
-			if version == "" {
-				version = "-"
-			}
-			dur := fmt.Sprintf("%dms", e.DurationMs)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				e.Time.Format(time.RFC3339), e.Action, e.App, version, dur, e.Result)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+				e.Time.Format("2006-01-02 15:04:05"),
+				orDash(e.Action), orDash(e.App), orDash(e.InitiatedBy),
+				orDash(e.Result), e.DurationMs)
 		}
 		w.Flush()
 		return nil
 	},
 }
 
+// orDash returns "-" for empty strings so table cells stay aligned.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 func init() {
-	auditCmd.Flags().IntVarP(&auditTail, "tail", "n", 20, "Number of recent entries")
+	auditCmd.Flags().StringVar(&auditApp, "app", "", "Filter by app name")
+	auditCmd.Flags().StringVar(&auditAction, "action", "", "Filter by action")
+	auditCmd.Flags().StringVar(&auditBy, "by", "", "Filter by initiating user")
+	auditCmd.Flags().StringVar(&auditSince, "since", "", "Only entries at/after this RFC3339 time")
+	auditCmd.Flags().StringVar(&auditUntil, "until", "", "Only entries at/before this RFC3339 time")
+	auditCmd.Flags().IntVar(&auditLimit, "limit", 50, "Max entries to return")
 	rootCmd.AddCommand(auditCmd)
 }

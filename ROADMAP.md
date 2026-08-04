@@ -179,8 +179,8 @@ All five items on the previous "immediate priority" list are resolved — none r
 
 - [ ] **Team auth (OIDC/OAuth2) + RBAC** — client handoff: read-only client access as a premium agency tier
 - [ ] **Preview deploys + GitHub Actions integration** — the demo feature (PR → preview URL, from a YAML workflow file, no web UI)
-- [ ] **Audit log search/filter + retention**
-- [ ] **Structured JSON logging**
+- [x] **Audit log search/filter + retention**
+- [x] **Structured JSON logging**
 - [ ] **Optional PostgreSQL** — only on client demand (same schema, separate driver files)
 - ~~**Multi-node**~~ — **STRUCK / deferred**: agencies run one VPS; revisit on multi-VPS demand
 
