@@ -168,6 +168,9 @@ func (s *Server) registerRoutes() {
 	mux.HandleFunc("POST /api/v1/apps/{name}/env-group", s.handleSetAppEnvGroup)
 	mux.HandleFunc("DELETE /api/v1/apps/{name}/env-group", s.handleClearAppEnvGroup)
 
+	// Health status
+	mux.HandleFunc("GET /api/v1/apps/{name}/health", s.handleAppHealthGet)
+
 	s.mux = panicRecoveryMiddleware(loggingMiddleware(mux))
 }
 

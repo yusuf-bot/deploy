@@ -63,8 +63,8 @@ var statusCmd = &cobra.Command{
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "APP\tSTATUS\tPORT\tACTIVE VERSION\tIN PROGRESS")
-			fmt.Fprintln(w, "---\t------\t----\t--------------\t-----------")
+			fmt.Fprintln(w, "APP\tSTATUS\tHEALTH\tPORT\tACTIVE VERSION\tIN PROGRESS")
+			fmt.Fprintln(w, "---\t------\t------\t----\t--------------\t-----------")
 			for _, app := range resp.Apps {
 				version := ""
 				if app.ActiveDeployment != nil {
@@ -74,7 +74,11 @@ var statusCmd = &cobra.Command{
 				if app.DeployInProgress {
 					inProgress = "yes"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", app.App.Name, app.App.Status, app.App.Port, version, inProgress)
+				health := "-"
+				if app.App.HealthPath != "" {
+					health = "configured"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", app.App.Name, app.App.Status, health, app.App.Port, version, inProgress)
 			}
 			w.Flush()
 		}

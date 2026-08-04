@@ -151,6 +151,20 @@ var migrations = []Migration{
 			ALTER TABLE apps ADD COLUMN group_id INTEGER REFERENCES env_groups(id);
 		`,
 	},
+	{
+		Version: 10,
+		SQL: `
+			ALTER TABLE apps ADD COLUMN health_path TEXT NOT NULL DEFAULT '';
+			CREATE TABLE IF NOT EXISTS app_health (
+				app_id TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+				status TEXT NOT NULL DEFAULT 'unknown',
+				last_checked TEXT NOT NULL DEFAULT '',
+				last_ok TEXT NOT NULL DEFAULT '',
+				last_error TEXT NOT NULL DEFAULT '',
+				last_notified TEXT NOT NULL DEFAULT ''
+			);
+		`,
+	},
 }
 
 // EnsureSchemaMigrationsTable creates the tracking table if it doesn't exist.

@@ -26,12 +26,12 @@ func serializeEnv(env map[string]string) string {
 func scanAppRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (types.App, error) {
-	var id, name, status, image, envJSON, memory, cpus, createdAt, updatedAt string
+	var id, name, status, image, envJSON, memory, cpus, healthPath, createdAt, updatedAt string
 	var port, servicePort int
 	var groupID sql.NullInt64
 	var containerID sql.NullString
 
-	err := scanner.Scan(&id, &name, &status, &port, &servicePort, &groupID, &image, &envJSON, &memory, &cpus, &containerID, &createdAt, &updatedAt)
+	err := scanner.Scan(&id, &name, &status, &port, &servicePort, &groupID, &image, &envJSON, &memory, &cpus, &healthPath, &containerID, &createdAt, &updatedAt)
 	if err != nil {
 		return types.App{}, err
 	}
@@ -52,6 +52,7 @@ func scanAppRow(scanner interface {
 		Status:      status,
 		Port:        port,
 		ServicePort: servicePort,
+		HealthPath:  healthPath,
 		Image:       image,
 		Env:         env,
 		CreatedAt:   createdTime,
@@ -134,7 +135,7 @@ func UpdateAppResources(db Execer, name string, resources *types.ResourceConfig)
 // GetApp retrieves an app by its ID.
 func GetApp(db *sql.DB, id string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, health_path, container_id, created_at, updated_at 
 		 FROM apps WHERE id = ?`, id,
 	)
 	app, err := scanAppRow(row)
@@ -150,7 +151,7 @@ func GetApp(db *sql.DB, id string) (*types.App, error) {
 // GetAppByName retrieves an app by its name.
 func GetAppByName(db *sql.DB, name string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, health_path, container_id, created_at, updated_at 
 		 FROM apps WHERE name = ?`, name,
 	)
 	app, err := scanAppRow(row)
@@ -170,12 +171,12 @@ func ListApps(db *sql.DB, status string) ([]types.App, error) {
 
 	if status != "" {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, health_path, container_id, created_at, updated_at 
 			 FROM apps WHERE status = ? ORDER BY name`, status,
 		)
 	} else {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, group_id, image, env, memory, cpus, health_path, container_id, created_at, updated_at 
 			 FROM apps ORDER BY name`,
 		)
 	}
@@ -272,6 +273,63 @@ func UpdateAppGroup(db Execer, name string, groupID *int) error {
 		return fmt.Errorf("update app group: %w", err)
 	}
 	return nil
+}
+
+// UpdateAppHealthPath persists the health check path for an app.
+func UpdateAppHealthPath(db Execer, name string, healthPath string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`UPDATE apps SET health_path = ?, updated_at = ? WHERE name = ?`,
+		healthPath, now, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update app health path: %w", err)
+	}
+	return nil
+}
+
+// GetAppHealth retrieves health status for an app.
+func GetAppHealth(db *sql.DB, appID string) (*AppHealth, error) {
+	row := db.QueryRow(
+		`SELECT app_id, status, last_checked, last_ok, last_error, last_notified 
+		 FROM app_health WHERE app_id = ?`, appID,
+	)
+	var h AppHealth
+	h.AppID = appID
+	h.Status = "unknown"
+	err := row.Scan(&h.AppID, &h.Status, &h.LastChecked, &h.LastOk, &h.LastError, &h.LastNotified)
+	if err == sql.ErrNoRows {
+		return &h, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app health: %w", err)
+	}
+	return &h, nil
+}
+
+// UpdateAppHealth upserts health status for an app.
+func UpdateAppHealth(db Execer, appID, status, lastChecked, lastOk, lastError, lastNotified string) error {
+	_, err := db.Exec(
+		`INSERT INTO app_health (app_id, status, last_checked, last_ok, last_error, last_notified)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(app_id) DO UPDATE SET status=excluded.status, last_checked=excluded.last_checked, 
+		 last_ok=excluded.last_ok, last_error=excluded.last_error, last_notified=excluded.last_notified`,
+		appID, status, lastChecked, lastOk, lastError, lastNotified,
+	)
+	if err != nil {
+		return fmt.Errorf("update app health: %w", err)
+	}
+	return nil
+}
+
+// AppHealth represents the health status of an app.
+type AppHealth struct {
+	AppID        string `json:"app_id"`
+	Status       string `json:"status"`
+	LastChecked  string `json:"last_checked"`
+	LastOk       string `json:"last_ok"`
+	LastError    string `json:"last_error"`
+	LastNotified string `json:"last_notified"`
 }
 
 // UpdateAppServicePort updates the container (service) port of an app.

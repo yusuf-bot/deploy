@@ -298,6 +298,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if cfg.Health.Path != "" {
 		healthPath = cfg.Health.Path
 	}
+	state.UpdateAppHealthPath(d.db, appName, healthPath)
 	initialDelay := 1 * time.Second
 	if cfg.Health.InitialDelay != "" {
 		if d, err := time.ParseDuration(cfg.Health.InitialDelay); err == nil {

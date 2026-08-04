@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -173,6 +174,21 @@ func runDaemon() error {
 		}
 	}
 
+	// Health check monitor — runs every 30s for all running apps.
+	healthCtx, cancelHealth := context.WithCancel(context.Background())
+	healthDone := make(chan struct{})
+	go func() {
+		defer close(healthDone)
+		runHealthMonitor(healthCtx, db, dockerRunner)
+	}()
+	defer func() {
+		cancelHealth()
+		select {
+		case <-healthDone:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
 	server := api.NewServer(db, dockerRunner, sched, deployer, cm, config.SocketPath(), masterKey)
 
 	// Scheduled per-app backups. Started only here (after server init), never
@@ -306,6 +322,139 @@ func runScheduledBackups(ctx context.Context, db *sql.DB) {
 		case now := <-ticker.C:
 			runOnce(now)
 		}
+	}
+}
+
+const (
+	healthCheckInterval = 30 * time.Second
+	healthWebhookCooldown = 5 * time.Minute
+)
+
+// runHealthMonitor checks all running apps' health every 30s and sends
+// webhook alerts when an app transitions from ok to failed, with a 5-minute
+// cooldown between notifications per app.
+func runHealthMonitor(ctx context.Context, db *sql.DB, dockerRunner runner.Interface) {
+	ticker := time.NewTicker(healthCheckInterval)
+	defer ticker.Stop()
+
+	// Track last notification time per app to enforce cooldown
+	lastNotified := make(map[string]time.Time)
+
+	runOnce := func(now time.Time) {
+		apps, err := state.ListApps(db, "")
+		if err != nil {
+			log.Printf("health monitor: list apps: %v", err)
+			return
+		}
+
+		webhookURL, _ := state.GetSetting(db, "webhook_url")
+		webhookSecret, _ := state.GetSetting(db, "webhook_secret")
+
+		for _, app := range apps {
+			if app.Status != types.StatusRunning || app.ContainerID == "" {
+				continue
+			}
+			if app.HealthPath == "" {
+				continue
+			}
+
+			healthPath := app.HealthPath
+			if !strings.HasPrefix(healthPath, "/") {
+				healthPath = "/" + healthPath
+			}
+
+			port := app.ServicePort
+			if port == 0 {
+				port = app.Port
+			}
+
+			checkURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, healthPath)
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Get(checkURL)
+
+			currentStatus := "ok"
+			var lastErr string
+			if err != nil {
+				currentStatus = "failed"
+				lastErr = err.Error()
+			} else {
+				resp.Body.Close()
+				if resp.StatusCode >= 500 {
+					currentStatus = "failed"
+					lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				}
+			}
+
+			// Get previous status
+			health, err := state.GetAppHealth(db, app.ID)
+			if err != nil {
+				log.Printf("health monitor: get health %q: %v", app.Name, err)
+				continue
+			}
+			prevStatus := health.Status
+
+			// Update health record
+			lastChecked := now.Format(time.RFC3339)
+			lastOk := health.LastOk
+			lastNotifiedStr := health.LastNotified
+			if currentStatus == "ok" {
+				lastOk = lastChecked
+			}
+			if err := state.UpdateAppHealth(db, app.ID, currentStatus, lastChecked, lastOk, lastErr, lastNotifiedStr); err != nil {
+				log.Printf("health monitor: update health %q: %v", app.Name, err)
+				continue
+			}
+
+			// Send webhook on ok->failed transition (with cooldown)
+			if prevStatus == "ok" && currentStatus == "failed" && webhookURL != "" {
+				if last, ok := lastNotified[app.Name]; ok && now.Sub(last) < healthWebhookCooldown {
+					log.Printf("health monitor: %q failed but cooldown active, skipping webhook", app.Name)
+					continue
+				}
+				lastNotified[app.Name] = now
+				go sendHealthWebhook(webhookURL, webhookSecret, app.Name, lastErr)
+			}
+
+			if prevStatus != currentStatus {
+				log.Printf("health monitor: %q status %s -> %s", app.Name, prevStatus, currentStatus)
+			}
+		}
+	}
+
+	runOnce(time.Now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			runOnce(now)
+		}
+	}
+}
+
+// sendHealthWebhook sends an alert to the configured webhook URL.
+func sendHealthWebhook(webhookURL, secret, appName, errMsg string) {
+	payload := fmt.Sprintf(`{"event":"health_failed","app":"%s","error":"%s","ts":"%s"}`,
+		appName, errMsg, time.Now().UTC().Format(time.RFC3339))
+
+	req, err := http.NewRequest("POST", webhookURL, strings.NewReader(payload))
+	if err != nil {
+		log.Printf("health webhook: create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		req.Header.Set("X-Deploy-Secret", secret)
+	}
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		log.Printf("health webhook: send: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		log.Printf("health webhook: status %d", resp.StatusCode)
 	}
 }
 

@@ -1690,11 +1690,50 @@ func (s *Server) handleSetAppEnvGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClearAppEnvGroup(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+	appName := r.PathValue("name")
+	if appName == "" {
+		writeError(w, http.StatusBadRequest, types.ErrorResponse{Error: "app name is required"})
 		return
 	}
+	app, err := state.GetAppByName(s.db, appName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, types.ErrorResponse{Error: "app not found"})
+		return
+	}
+	if err := state.UpdateAppGroup(s.db, app.Name, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+}
+
+// handleAppHealthGet returns health status for an app.
+func (s *Server) handleAppHealthGet(w http.ResponseWriter, r *http.Request) {
+	appName := r.PathValue("name")
+	if appName == "" {
+		writeError(w, http.StatusBadRequest, types.ErrorResponse{Error: "app name is required"})
+		return
+	}
+	app, err := state.GetAppByName(s.db, appName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, types.ErrorResponse{Error: "app not found"})
+		return
+	}
+	health, err := state.GetAppHealth(s.db, app.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
+}
 
 	app, err := state.GetAppByName(s.db, name)
 	if err != nil {

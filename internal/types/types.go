@@ -107,6 +107,7 @@ type App struct {
 	Port        int               `json:"port"`
 	ServicePort int               `json:"service_port,omitempty"`
 	GroupID     *int              `json:"group_id,omitempty"`
+	HealthPath  string            `json:"health_path,omitempty"`
 	Image       string            `json:"image"`
 	Env         map[string]string `json:"env"`
 	Volumes     []VolumeMapping   `json:"volumes,omitempty"`
