@@ -3,7 +3,19 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
+)
+
+const (
+	// SettingBackupSchedule is the scheduled-backup cadence setting
+	// ("daily HH:MM" or "weekly DOW HH:MM"; empty disables).
+	SettingBackupSchedule = "backup_schedule"
+	// SettingBackupRetention is the number of per-app backup archives kept per
+	// app by the scheduled backup runner.
+	SettingBackupRetention = "backup_retention"
+	// DefaultBackupRetention is used when backup_retention is unset.
+	DefaultBackupRetention = 3
 )
 
 // GetSetting retrieves a setting value by key.
@@ -75,4 +87,32 @@ func EncryptedGetSetting(db *sql.DB, key string, masterKey []byte) (string, erro
 		return "", fmt.Errorf("decrypt setting %q: %w", key, err)
 	}
 	return string(decrypted), nil
+}
+
+// GetBackupSchedule returns the parsed backup_schedule setting, or nil when
+// unset/empty (scheduled backups off).
+func GetBackupSchedule(db *sql.DB) (*BackupSchedule, error) {
+	val, err := GetSetting(db, SettingBackupSchedule)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBackupSchedule(val)
+}
+
+// GetBackupRetention returns the backup_retention setting, defaulting to
+// DefaultBackupRetention when unset. A stored value below 1 is clamped to the
+// default (settings are validated on set, so this only guards tampered data).
+func GetBackupRetention(db *sql.DB) (int, error) {
+	val, err := GetSetting(db, SettingBackupRetention)
+	if err != nil {
+		return 0, err
+	}
+	if val == "" {
+		return DefaultBackupRetention, nil
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 1 {
+		return DefaultBackupRetention, nil
+	}
+	return n, nil
 }

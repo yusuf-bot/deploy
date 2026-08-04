@@ -1501,6 +1501,19 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range req {
+		switch k {
+		case state.SettingBackupSchedule:
+			if _, err := state.ParseBackupSchedule(v); err != nil {
+				writeError(w, http.StatusBadRequest, BadRequestError(err.Error()))
+				return
+			}
+		case state.SettingBackupRetention:
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				writeError(w, http.StatusBadRequest, BadRequestError("backup_retention must be an integer >= 1"))
+				return
+			}
+		}
 		if secretSettings[k] {
 			if err := state.EncryptedSetSetting(s.db, k, v, s.masterKey); err != nil {
 				writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))

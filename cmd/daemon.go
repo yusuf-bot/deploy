@@ -170,6 +170,22 @@ func runDaemon() error {
 
 	server := api.NewServer(db, dockerRunner, sched, deployer, cm, config.SocketPath(), masterKey)
 
+	// Scheduled per-app backups. Started only here (after server init), never
+	// inside api.NewServer, so the hermetic test harness never sees it.
+	backupCtx, cancelBackups := context.WithCancel(context.Background())
+	backupsDone := make(chan struct{})
+	go func() {
+		defer close(backupsDone)
+		runScheduledBackups(backupCtx, db)
+	}()
+	defer func() {
+		cancelBackups()
+		select {
+		case <-backupsDone:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
 	// Channel to receive server errors
 	errCh := make(chan error, 1)
 
@@ -218,6 +234,74 @@ func containerShortID(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// runScheduledBackups runs a per-app backup for every app when the
+// backup_schedule setting matches the current time, then enforces
+// backup_retention (keep the newest N archives per app). It checks once at
+// startup and then every 60s, tracking the last-run minute so a scheduled
+// backup never double-fires within the same minute.
+func runScheduledBackups(ctx context.Context, db *sql.DB) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	var lastRun string // "2006-01-02 15:04" of the last scheduled backup
+
+	runOnce := func(now time.Time) {
+		sched, err := state.GetBackupSchedule(db)
+		if err != nil {
+			log.Printf("scheduled backup: read schedule: %v", err)
+			return
+		}
+		if sched == nil || !sched.Match(now) {
+			return
+		}
+
+		minuteKey := now.Format("2006-01-02 15:04")
+		if lastRun == minuteKey {
+			return
+		}
+		lastRun = minuteKey
+
+		retention, err := state.GetBackupRetention(db)
+		if err != nil {
+			log.Printf("scheduled backup: read retention: %v", err)
+			retention = state.DefaultBackupRetention
+		}
+
+		apps, err := state.ListApps(db, "")
+		if err != nil {
+			log.Printf("scheduled backup: list apps: %v", err)
+			return
+		}
+		for _, app := range apps {
+			path, err := api.CreateAppBackup(db, app.Name)
+			if err != nil {
+				log.Printf("scheduled backup %q: %v", app.Name, err)
+				continue
+			}
+			log.Printf("scheduled backup %q: %s", app.Name, path)
+		}
+
+		removed, err := api.PruneAppBackups(filepath.Join(config.DeployDirPath(), "backups"), retention)
+		if err != nil {
+			log.Printf("scheduled backup: prune: %v", err)
+			return
+		}
+		for _, p := range removed {
+			log.Printf("scheduled backup: pruned %s", p)
+		}
+	}
+
+	runOnce(time.Now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			runOnce(now)
+		}
+	}
 }
 
 

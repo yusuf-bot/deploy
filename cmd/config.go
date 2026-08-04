@@ -14,7 +14,13 @@ import (
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage daemon settings",
-	Long:  `View and set daemon configuration settings (stored in SQLite).`,
+	Long: `View and set daemon configuration settings (stored in SQLite).
+
+Known settings:
+  backup_schedule    scheduled per-app backups: "daily HH:MM" or
+                     "weekly DOW HH:MM" (DOW = mon..sun); "" disables
+  backup_retention   per-app backup archives kept per app (default 3, min 1)
+`,
 }
 
 var configGetReveal bool
@@ -86,7 +92,16 @@ var configGetCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set key=val",
 	Short: "Set a setting",
-	Args:  cobra.RangeArgs(1, 2),
+	Long: `Set a daemon setting, e.g.:
+
+  deploy config set backup_schedule "daily 03:00"     # daily at 03:00
+  deploy config set backup_schedule "weekly sun 02:00" # every Sunday at 02:00
+  deploy config set backup_schedule ""                # disable scheduled backups
+  deploy config set backup_retention 7                # keep 7 archives per app
+
+backup_schedule accepts "daily HH:MM" or "weekly DOW HH:MM" (DOW = mon..sun).
+backup_retention must be an integer >= 1 (default 3).`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var key, value string
 		if len(args) == 1 {
