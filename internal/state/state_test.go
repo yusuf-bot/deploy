@@ -316,3 +316,87 @@ func TestSetAllRunningToUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateAppPersistsResources(t *testing.T) {
+	db := setupTestDB(t)
+	app := &types.App{
+		ID:    uuid.New().String(),
+		Name:  "res-app",
+		Port:  8081,
+		Image: "nginx:latest",
+		Resources: &types.ResourceConfig{
+			Memory: "512m",
+			CPUs:   "0.5",
+		},
+	}
+	if _, err := CreateApp(db, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	got, err := GetAppByName(db, "res-app")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if got.Resources == nil {
+		t.Fatal("expected resources to be persisted")
+	}
+	if got.Resources.Memory != "512m" || got.Resources.CPUs != "0.5" {
+		t.Errorf("unexpected resources: %+v", got.Resources)
+	}
+}
+
+func TestCreateAppNoResourcesStaysNil(t *testing.T) {
+	db := setupTestDB(t)
+	app := &types.App{
+		ID:    uuid.New().String(),
+		Name:  "nores-app",
+		Port:  8082,
+		Image: "nginx:latest",
+	}
+	if _, err := CreateApp(db, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	got, err := GetAppByName(db, "nores-app")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if got.Resources != nil {
+		t.Errorf("expected nil resources, got %+v", got.Resources)
+	}
+}
+
+func TestUpdateAppResources(t *testing.T) {
+	db := setupTestDB(t)
+	app := &types.App{
+		ID:    uuid.New().String(),
+		Name:  "upd-res-app",
+		Port:  8083,
+		Image: "nginx:latest",
+	}
+	if _, err := CreateApp(db, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	if err := UpdateAppResources(db, "upd-res-app", &types.ResourceConfig{Memory: "1g", CPUs: "2"}); err != nil {
+		t.Fatalf("UpdateAppResources: %v", err)
+	}
+	got, err := GetAppByName(db, "upd-res-app")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if got.Resources == nil || got.Resources.Memory != "1g" || got.Resources.CPUs != "2" {
+		t.Errorf("unexpected resources after update: %+v", got.Resources)
+	}
+
+	// Clearing resources works too
+	if err := UpdateAppResources(db, "upd-res-app", &types.ResourceConfig{}); err != nil {
+		t.Fatalf("UpdateAppResources clear: %v", err)
+	}
+	got, err = GetAppByName(db, "upd-res-app")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	if got.Resources != nil {
+		t.Errorf("expected nil resources after clear, got %+v", got.Resources)
+	}
+}

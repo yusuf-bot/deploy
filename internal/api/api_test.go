@@ -1358,3 +1358,91 @@ func TestExecRejectsEmptyCmd(t *testing.T) {
 		t.Errorf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
 	}
 }
+
+func TestUsageEndpoint(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DEPLOY_DATA_DIR", tmp)
+	server, socketPath := startTestServer(t)
+	defer os.Remove(socketPath)
+
+	mock, ok := server.runner.(*runner.MockDocker)
+	if !ok {
+		t.Fatalf("expected MockDocker runner, got %T", server.runner)
+	}
+	mock.SystemUsage = types.SystemUsage{
+		ImagesTotalBytes:       100 * 1024 * 1024,
+		ImagesReclaimableBytes: 10 * 1024 * 1024,
+		ContainersTotalBytes:   5 * 1024 * 1024,
+		VolumesTotalBytes:      20 * 1024 * 1024,
+		BuildCacheTotalBytes:   3 * 1024 * 1024,
+		ImagesTotalCount:       12,
+		ContainersTotalCount:   3,
+		VolumesTotalCount:      2,
+		BuildCacheTotalCount:   4,
+	}
+
+	// Create an app
+	appBody := `{"name":"usage-app","port":15002,"image":"usage-app:latest"}`
+	resp := httpDo(t, socketPath, "POST", "/api/v1/apps", bytes.NewBufferString(appBody))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Start it so the mock has a running container and the DB has its ID
+	resp = httpDo(t, socketPath, "POST", "/api/v1/apps/usage-app/start", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start app: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// Write a tarball so image_disk_bytes is nonzero
+	imgDir := filepath.Join(tmp, "images", "usage-app")
+	if err := os.MkdirAll(imgDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imgDir, "v1.tar"), make([]byte, 4096), 0600); err != nil {
+		t.Fatalf("write tarball: %v", err)
+	}
+
+	// Aggregate usage
+	resp = httpDo(t, socketPath, "GET", "/api/v1/usage", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("usage: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	var ur types.UsageResponse
+	if err := json.Unmarshal([]byte(readBody(t, resp)), &ur); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(ur.Apps) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(ur.Apps))
+	}
+	a := ur.Apps[0]
+	if a.App != "usage-app" || !a.Running || a.CPUPct != 12.5 {
+		t.Errorf("unexpected app usage: %+v", a)
+	}
+	if a.MemBytes != 64*1024*1024 || a.MemLimit != 512*1024*1024 {
+		t.Errorf("unexpected mem: %+v", a)
+	}
+	if a.ImageDiskBytes != 4096 {
+		t.Errorf("expected 4096 image disk bytes, got %d", a.ImageDiskBytes)
+	}
+	if ur.System.ImagesTotalBytes != 100*1024*1024 || ur.System.ImagesTotalCount != 12 {
+		t.Errorf("unexpected system totals: %+v", ur.System)
+	}
+
+	// Filtered usage
+	resp = httpDo(t, socketPath, "GET", "/api/v1/usage?app=usage-app", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("usage filtered: %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	ur = types.UsageResponse{}
+	json.Unmarshal([]byte(readBody(t, resp)), &ur)
+	if len(ur.Apps) != 1 || ur.Apps[0].App != "usage-app" {
+		t.Errorf("expected filtered app usage, got %+v", ur.Apps)
+	}
+
+	// Unknown app -> 404
+	resp = httpDo(t, socketPath, "GET", "/api/v1/usage?app=nope", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown app, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+}

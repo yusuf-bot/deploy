@@ -22,15 +22,15 @@ func serializeEnv(env map[string]string) string {
 	return string(b)
 }
 
-// scanAppRow scans a full app row including port.
+// scanAppRow scans a full app row including port and resource limits.
 func scanAppRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (types.App, error) {
-	var id, name, status, image, envJSON, createdAt, updatedAt string
+	var id, name, status, image, envJSON, memory, cpus, createdAt, updatedAt string
 	var port, servicePort int
 	var containerID sql.NullString
 
-	err := scanner.Scan(&id, &name, &status, &port, &servicePort, &image, &envJSON, &containerID, &createdAt, &updatedAt)
+	err := scanner.Scan(&id, &name, &status, &port, &servicePort, &image, &envJSON, &memory, &cpus, &containerID, &createdAt, &updatedAt)
 	if err != nil {
 		return types.App{}, err
 	}
@@ -57,6 +57,10 @@ func scanAppRow(scanner interface {
 		UpdatedAt: updatedTime,
 	}
 
+	if memory != "" || cpus != "" {
+		app.Resources = &types.ResourceConfig{Memory: memory, CPUs: cpus}
+	}
+
 	if containerID.Valid {
 		app.ContainerID = containerID.String
 	}
@@ -74,10 +78,12 @@ func CreateApp(db *sql.DB, app *types.App) (*types.App, error) {
 		containerID = &app.ContainerID
 	}
 
+	memory, cpus := serializeResources(app.Resources)
+
 	_, err := db.Exec(
-		`INSERT INTO apps (id, name, status, port, service_port, image, env, container_id, created_at, updated_at) 
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		app.ID, app.Name, app.Status, app.Port, app.ServicePort, app.Image, envJSON, containerID, now, now,
+		`INSERT INTO apps (id, name, status, port, service_port, image, env, memory, cpus, container_id, created_at, updated_at) 
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.ID, app.Name, app.Status, app.Port, app.ServicePort, app.Image, envJSON, memory, cpus, containerID, now, now,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -91,10 +97,32 @@ func CreateApp(db *sql.DB, app *types.App) (*types.App, error) {
 	return app, nil
 }
 
+// serializeResources flattens a ResourceConfig into its DB columns.
+func serializeResources(r *types.ResourceConfig) (memory, cpus string) {
+	if r == nil {
+		return "", ""
+	}
+	return r.Memory, r.CPUs
+}
+
+// UpdateAppResources persists resource limits for an app.
+func UpdateAppResources(db Execer, name string, resources *types.ResourceConfig) error {
+	memory, cpus := serializeResources(resources)
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(
+		`UPDATE apps SET memory = ?, cpus = ?, updated_at = ? WHERE name = ?`,
+		memory, cpus, now, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update app resources: %w", err)
+	}
+	return nil
+}
+
 // GetApp retrieves an app by its ID.
 func GetApp(db *sql.DB, id string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, image, env, memory, cpus, container_id, created_at, updated_at 
 		 FROM apps WHERE id = ?`, id,
 	)
 	app, err := scanAppRow(row)
@@ -110,7 +138,7 @@ func GetApp(db *sql.DB, id string) (*types.App, error) {
 // GetAppByName retrieves an app by its name.
 func GetAppByName(db *sql.DB, name string) (*types.App, error) {
 	row := db.QueryRow(
-		`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
+		`SELECT id, name, status, port, service_port, image, env, memory, cpus, container_id, created_at, updated_at 
 		 FROM apps WHERE name = ?`, name,
 	)
 	app, err := scanAppRow(row)
@@ -130,12 +158,12 @@ func ListApps(db *sql.DB, status string) ([]types.App, error) {
 
 	if status != "" {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, image, env, memory, cpus, container_id, created_at, updated_at 
 			 FROM apps WHERE status = ? ORDER BY name`, status,
 		)
 	} else {
 		rows, err = db.Query(
-			`SELECT id, name, status, port, service_port, image, env, container_id, created_at, updated_at 
+			`SELECT id, name, status, port, service_port, image, env, memory, cpus, container_id, created_at, updated_at 
 			 FROM apps ORDER BY name`,
 		)
 	}

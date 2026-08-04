@@ -30,7 +30,7 @@ sudo deploy init
 cd my-project
 deploy scaffold
 
-# Deploy — builds, health checks, zero-downtime swap
+# Deploy — builds, health checks, health-gated swap
 deploy up myapp
 
 # Add a domain + automatic SSL
@@ -45,7 +45,7 @@ deploy domain add myapp example.com
 
 **Agent-native.** MCP server on the roadmap means AI can manage your deploys directly.
 
-**Zero-downtime deploys.** Build → start new container on separate port → health check → update Caddy → stop old. Old container never killed until new one is healthy.
+**Health-gated deploys with automatic rollback.** The old container is stopped before the new one starts on the same stable port — a brief stop-then-start window. If the new container fails its health check, the old container is restarted automatically.
 
 **SSL in one command.** Attach a domain and Caddy handles Let's Encrypt automatically.
 
@@ -54,7 +54,7 @@ deploy domain add myapp example.com
 ## Features
 
 ### Core
-- `deploy up` — Build Docker image, run health checks, zero-downtime swap
+- `deploy up` — Build Docker image, health-gated deploy with automatic rollback
 - `deploy rollback` — Revert to any of the last 5 deployed versions
 - `deploy start/stop/restart/rm` — Full app lifecycle
 - `deploy status` — See all apps and their health
@@ -104,7 +104,7 @@ deploy domain add myapp example.com
 
 - **CLI** → daemon over Unix socket at `/var/run/deploy/deploy.sock` (0770, deploy group)
 - **Daemon** manages state in SQLite (WAL mode), runs Docker containers, manages Caddy subprocess
-- **Promote flow**: build → save tarball → allocate free port → create container → health check → update Caddy → stop old container
+- **Promote flow**: build → save tarball → stop old container → start new on the same stable port → health check → update Caddy → remove old container
 - **Secrets** encrypted with AES-256-GCM, master key at `~/.deploy/master.key` (0600)
 - **Images** stored as tarballs in `~/.deploy/images/` (last 5 per app)
 
@@ -119,7 +119,7 @@ deploy domain add myapp example.com
 | Secrets mgmt | Built-in AES-256 | Plugin | ❌ | Platform |
 | Audit logs | Built-in | ❌ | ❌ | ❌ |
 | MCP server | Planned | ❌ | ❌ | ❌ |
-| Zero-downtime | ✅ | Plugin | ⚠️ | ✅ |
+| Health-gated deploys | ✅ | Plugin | ⚠️ | ✅ |
 | Price | Free (self-host) | Free | Free (self-host) | Usage-based |
 
 ## Requirements
@@ -142,7 +142,7 @@ See [ROADMAP.md](ROADMAP.md) for the full plan.
 | Database | SQLite default, optional PostgreSQL for teams |
 | Config format | deploy.yml = production, docker-compose.yml = local dev |
 | Main CLI command | `deploy up` (not `deploy promote`) |
-| Rollback strategy | Tarballs default, tag-based optional |
+| Rollback strategy | Tarballs (default and only option) |
 
 ## License
 

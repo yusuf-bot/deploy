@@ -580,6 +580,20 @@ func (c *Client) Exec(appName string, user string, cmd []string) (*ExecStream, e
 	return stream, nil
 }
 
+// Usage returns per-app usage (CPU/mem + image disk) and docker system totals.
+// An empty appName returns all apps; otherwise only that app (404 if unknown).
+func (c *Client) Usage(appName string) (*types.UsageResponse, error) {
+	path := "/api/v1/usage"
+	if appName != "" {
+		path += "?app=" + url.QueryEscape(appName)
+	}
+	var result types.UsageResponse
+	if err := c.doRequest("GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // Shutdown tells the daemon to shut down gracefully.
 func (c *Client) Shutdown() error {
 	return c.doRequest("POST", "/api/v1/shutdown", nil, nil)

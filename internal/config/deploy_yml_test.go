@@ -293,3 +293,59 @@ ports:
 		t.Errorf("expected empty network, got %q", cfg.Network)
 	}
 }
+
+func TestLoadDeployConfigValidResources(t *testing.T) {
+	yaml := `
+app: myapp
+resources:
+  memory: 1g
+  cpus: "2"
+`
+	path := writeTempYAML(t, yaml)
+	cfg, err := LoadDeployConfig(path)
+	if err != nil {
+		t.Fatalf("LoadDeployConfig: %v", err)
+	}
+	if cfg.Resources.Memory != "1g" || cfg.Resources.CPUs != "2" {
+		t.Errorf("unexpected resources: %+v", cfg.Resources)
+	}
+}
+
+func TestLoadDeployConfigInvalidMemory(t *testing.T) {
+	cases := []string{"abc", "12garbage", "1x", ""}
+	for _, mem := range cases {
+		if mem == "" {
+			continue // empty means unset, valid
+		}
+		yaml := "app: myapp\nresources:\n  memory: " + mem + "\n"
+		path := writeTempYAML(t, yaml)
+		_, err := LoadDeployConfig(path)
+		if err == nil {
+			t.Errorf("expected error for memory %q", mem)
+		}
+	}
+}
+
+func TestLoadDeployConfigInvalidCPUs(t *testing.T) {
+	cases := []string{"0", "-1", "abc", "1.5.2"}
+	for _, cpus := range cases {
+		yaml := "app: myapp\nresources:\n  cpus: " + cpus + "\n"
+		path := writeTempYAML(t, yaml)
+		_, err := LoadDeployConfig(path)
+		if err == nil {
+			t.Errorf("expected error for cpus %q", cpus)
+		}
+	}
+}
+
+func TestLoadDeployConfigEmptyResources(t *testing.T) {
+	yaml := "app: myapp\n"
+	path := writeTempYAML(t, yaml)
+	cfg, err := LoadDeployConfig(path)
+	if err != nil {
+		t.Fatalf("LoadDeployConfig: %v", err)
+	}
+	if cfg.Resources.Memory != "" || cfg.Resources.CPUs != "" {
+		t.Errorf("expected empty resources, got %+v", cfg.Resources)
+	}
+}

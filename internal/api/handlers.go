@@ -56,6 +56,67 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- Usage ---
+
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	appFilter := r.URL.Query().Get("app")
+
+	apps, err := state.ListApps(s.db, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	usage, err := s.runner.GetUsage(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	// Match live container stats to apps by container ID (app.ContainerID).
+	byContainer := make(map[string]types.ContainerUsage, len(usage.Containers))
+	for _, cu := range usage.Containers {
+		byContainer[cu.Container] = cu
+	}
+
+	resp := types.UsageResponse{
+		Apps:   []types.AppUsage{},
+		System: usage.System,
+	}
+	for _, app := range apps {
+		if appFilter != "" && app.Name != appFilter {
+			continue
+		}
+		au := types.AppUsage{
+			App:    app.Name,
+			Status: app.Status,
+		}
+		if app.ContainerID != "" {
+			if cu, ok := byContainer[app.ContainerID]; ok {
+				au.Running = cu.Running
+				au.ContainerID = shortID(cu.Container)
+				au.CPUPct = cu.CPUPct
+				au.MemBytes = cu.MemBytes
+				au.MemLimit = cu.MemLimit
+			}
+		}
+		if size, sizeErr := build.ImageDirSize(app.Name); sizeErr == nil {
+			au.ImageDiskBytes = size
+		} else {
+			log.Printf("usage %s: image dir size: %v", app.Name, sizeErr)
+		}
+		resp.Apps = append(resp.Apps, au)
+	}
+
+	if appFilter != "" && len(resp.Apps) == 0 {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+
 // --- Create App ---
 
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {

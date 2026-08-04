@@ -25,6 +25,9 @@ type MockDocker struct {
 	ExecExitCode int
 	// ExecCalls records every ExecContainer invocation.
 	ExecCalls []ExecCall
+
+	// SystemUsage is the canned docker system df totals returned by GetUsage.
+	SystemUsage types.SystemUsage
 }
 
 // ExecCall records a single ExecContainer invocation.
@@ -341,4 +344,36 @@ func (m *MockDocker) ExecContainer(ctx context.Context, containerID, user string
 			return code, nil
 		},
 	}, nil
+}
+
+// UsageSystem carries canned docker system df totals returned by GetUsage.
+// When left zero, GetUsage returns zeroed system totals and per-container rows
+// derived from the mock's container map.
+func (m *MockDocker) GetUsage(ctx context.Context) (types.DockerUsage, error) {
+	if err := m.shouldFail("GetUsage"); err != nil {
+		return types.DockerUsage{}, err
+	}
+
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+
+	du := types.DockerUsage{System: m.SystemUsage}
+	for id, c := range m.Containers {
+		appName := ""
+		if c.App != nil {
+			appName = c.App.Name
+		}
+		cu := types.ContainerUsage{
+			AppID:     appName,
+			Container: id,
+			Running:   c.Running,
+		}
+		if c.Running {
+			cu.CPUPct = 12.5
+			cu.MemBytes = 64 * 1024 * 1024
+			cu.MemLimit = 512 * 1024 * 1024
+		}
+		du.Containers = append(du.Containers, cu)
+	}
+	return du, nil
 }

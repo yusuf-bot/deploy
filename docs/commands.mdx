@@ -13,7 +13,7 @@ Initialize the deploy environment. Creates `~/.deploy/`, SQLite database, master
 Flags: `--no-systemd` — Skip systemd service setup
 
 ### `deploy up [app-name]`
-Primary deploy command. Builds Docker image, starts new container, health checks, swaps Caddy config, stops old container. Zero-downtime.
+Primary deploy command. Builds Docker image, stops the old container, starts the new container on the same stable port, health checks, updates Caddy config. Health-gated deploy with automatic rollback (brief stop-then-start window).
 
 Legacy alias: `deploy promote` (hidden, kept for backward compatibility)
 Use `--dir <path>` to specify the app directory (default: `.`). Use `--wait=false` to return immediately instead of blocking until the deploy finishes.
@@ -91,13 +91,13 @@ Stop a dev container.
 Show the audit log, optionally filtered by app. Use `--tail, -n` to set entry count (default 20).
 
 ### `deploy backup`
-Create a full backup of deploy state.
+Create a full-system backup of deploy state (database, master key, audit log, image tarballs, Caddy config). Per-app backup is planned for v0.4.0.
 
 ### `deploy restore <file>`
 Restore from a backup file.
 
-### `deploy usage <name>`
-Show container CPU/memory usage.
+### `deploy usage [app-name]`
+Show per-app resource usage: CPU and memory from Docker stats, per-app image disk usage, and docker system totals. Without an app name, shows an aggregate table for all apps. Use `--json` for structured output.
 
 ### `deploy ssh <name>`
 Open an interactive shell in a running container.

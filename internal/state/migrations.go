@@ -20,6 +20,7 @@ type Migration struct {
 // v5 = Phase 5 schema (port_allocations table).
 // v6 = http_only flag on domains (serve domain HTTP-only, no TLS/https block).
 // v7 = service_port on apps (container port for host->container bindings).
+// v8 = memory/cpus resource limits on apps (persisted from deploy.yml).
 var migrations = []Migration{
 	{
 		Version: 1,
@@ -123,6 +124,13 @@ var migrations = []Migration{
 		Version: 7,
 		SQL: `
 			ALTER TABLE apps ADD COLUMN service_port INTEGER NOT NULL DEFAULT 0;
+		`,
+	},
+	{
+		Version: 8,
+		SQL: `
+			ALTER TABLE apps ADD COLUMN memory TEXT NOT NULL DEFAULT '';
+			ALTER TABLE apps ADD COLUMN cpus TEXT NOT NULL DEFAULT '';
 		`,
 	},
 }

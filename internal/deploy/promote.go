@@ -155,6 +155,10 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 			Env:    cfg.Env,
 			Network: cfg.Network,
 		}
+		if cfg.Resources.Memory != "" || cfg.Resources.CPUs != "" {
+			r := cfg.Resources
+			newApp.Resources = &r
+		}
 		if _, createErr := state.CreateApp(d.db, newApp); createErr != nil {
 			return nil, fmt.Errorf("create app %q: %w", appName, createErr)
 		}
@@ -373,6 +377,9 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	}
 	if err := state.UpdateAppServicePort(tx, appName, svcPort); err != nil {
 		return nil, fmt.Errorf("update app service port: %w", err)
+	}
+	if err := state.UpdateAppResources(tx, appName, &cfg.Resources); err != nil {
+		return nil, fmt.Errorf("update app resources: %w", err)
 	}
 	if err := state.UpdateAppStatus(tx, appName, types.StatusRunning); err != nil {
 		return nil, fmt.Errorf("update app status: %w", err)

@@ -240,3 +240,29 @@ func RemoveAllTarballs(appName string) error {
 	}
 	return nil
 }
+
+// ImageDirSize returns the total size in bytes of all saved image tarballs for
+// an app (~/.deploy/images/<app>). Returns 0 when the app has no saved images.
+func ImageDirSize(appName string) (int64, error) {
+	dir := appImagesDir(appName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read images dir: %w", err)
+	}
+
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+	}
+	return total, nil
+}

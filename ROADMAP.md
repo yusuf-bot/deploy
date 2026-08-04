@@ -1,6 +1,6 @@
 # Roadmap
 
-Targeting solo devs → startups → SMEs, one segment at a time. v0.2.0 has the bones of a good product but critical bugs prevent even solo devs from having a working experience. v0.3.0 fixes every bug in the core loop before adding any features.
+Targeting dev agencies/freelancers → startup teams → SMEs, one segment at a time: agencies running 5-40 client apps on one VPS buy capability (per-app restore, isolation, audit) before anything else; startup teams buy only after trust is proven; side-project solo devs are a free distribution channel, not a buyer. v0.2.0 has the bones of a good product but critical bugs prevent even a single app from having a working experience. v0.3.0 fixes every bug in the core loop before adding any features.
 
 ## v0.2.0 (Fixed in Phase 1)
 
@@ -132,6 +132,8 @@ All 10 Phase 1 bugs fixed in a single pass. Build compiles, vet passes, binary w
 
 **Decision**: Keep tarballs, add `deploy config set rollback_strategy=tarball|tag` to let users choose. Default is tarball for safety. Tags option is faster for solo devs who don't prune aggressively.
 
+> **REVISED (v0.3.x audit)** — tarball is the default and **only** option. The tag-based option is **REMOVED from the roadmap** until it is actually implemented (docs honesty rule: claims must match code). See Design Decisions → Rollback strategy.
+
 ## Shipped in v0.3.0
 
 These shipped in v0.3.0 / v0.3.x but were never recorded in the roadmap:
@@ -144,47 +146,56 @@ These shipped in v0.3.0 / v0.3.x but were never recorded in the roadmap:
 - **`deploy prune` command** — keep N images per app, with `--dry-run`
 - **Secrets injected on ALL container-start paths** — previously promote-only
 - **promote → deploy messaging cleanup** — `deploy up` is the primary command
+- **Documentation site** — live at deploy.openexplorer.xyz with Nextra docs — Getting Started, Guides, Reference, Troubleshooting (moved here from the old v0.4.0 section when it was re-homed)
 
-## v0.3.x — open core-loop bugs (immediate priority)
+## v0.3.x — core-loop bugs (resolved)
 
-These are the current top priority — fix before any further feature work:
+All five items on the previous "immediate priority" list are resolved — none remain open:
 
-1. **`deploy up` writes the PREVIOUS port into the Caddy site conf** — stale/off-by-one; occasionally drops the conf entirely. Caddy SIGUSR1 reload is "not implemented" in the current build → needs a deterministic conf rewrite + restart. Reproduced twice (chessler empty domain, deploy-website 502).
-2. **`deploy start` / `deploy restart` broken** — they `docker pull <app>:latest` (registry) after stopping; local-only images fail → must fall back to the local image or skip the pull.
-3. **Port drift** — every deploy allocates a NEW port (20016→17→18) instead of reusing the app's current port.
+1. ~~**`deploy up` writes the PREVIOUS port into the Caddy site conf**~~ — **FIXED**. Deterministic conf rewrite + restart per app; verified by `internal/integration/caddy_test.go`.
+2. ~~**`deploy start` / `deploy restart` broken**~~ — **FIXED**. Start/restart no longer pull `<app>:latest` from the registry; they fall back to the local image. Verified by `internal/api/api_test.go` → `TestStartSkipsRegistryPull`.
+3. ~~**Port drift**~~ — **FIXED**. Ports are reused from the SQLite allocation pool, not `app.Port + 1`. Verified by `internal/state/ports_test.go` → `TestAllocatePortReusesExistingAllocation` and `internal/integration/promote_test.go` → `TestPromoteReusesPort`.
 4. ~~**Integration tests**~~ — **DONE** in `internal/integration/` (Docker-based promote/rollback/prune/dev lifecycle tests, hermetic `DEPLOY_DATA_DIR`).
-5. **`rollback_strategy=tarball|tag`** — decision made, not yet implemented.
+5. ~~**`rollback_strategy=tarball|tag`**~~ — **REMOVED**. Decision revised: tarball is the default and only option; the tag path is not implemented. See Design Decisions → Rollback strategy.
 
-## v0.4.0 — Startup features
+## v0.4.0 — Agency ops
 
-**Goal**: 3-15 person teams can use deploy for staging + production with CI/CD integration. Preview deploys for every PR.
+**Goal**: A dev agency can onboard a client app and prove recovery in minutes on a single VPS — per-app backup/restore, isolation, and audit, with no per-client infrastructure.
 
-- [ ] **Preview deployments**: Per-branch ephemeral environments with isolated port + subdomain. Auto-cleanup on branch delete.
-- [ ] **GitHub Actions integration**: Official action for preview deploys + production promote.
-- [ ] **Optional PostgreSQL support**: Same schema, separate driver files. Config swap, not a fork.
-- [ ] **Project-level env groups**: Shared env vars across multiple services in a project.
-- [ ] **Team auth**: OIDC/OAuth2 for the socket API. Single sign-on via GitHub/Google.
-- [ ] **Structured JSON logging**: All daemon output as JSON for log aggregation.
-- [x] **Documentation site**: Live at deploy.openexplorer.xyz with Nextra docs (originally planned as Mintlify) — Getting Started, Guides, Reference, Troubleshooting.
+**Effort basis: one dev. Total for this release: ~2-3 weeks.**
 
-## v0.5.0 — SME features
+| Task | Effort | Notes |
+|------|--------|-------|
+| **Per-app backup/restore** — `deploy backup <app>` / `deploy restore <app>`; restore one client app on a fresh VPS in minutes | M-L, 3-5d | **THE headline feature / primary agency selling point.** ~60% of the machinery exists: image tarballs per app in `~/.deploy/images/`, and the load-tarball→create→start→healthcheck path in `internal/deploy/rollback.go:69-151`. Missing: app-filtered backup API, per-app SQLite row export/import (apps/deployments/secrets/domains/port_allocations), CLI glue. **Stretch**: scheduled per-app backups (cron + retention). |
+| **Resource limits** — finish what's 90% built: deploy.yml `resources:` already parses and applies to `HostConfig` (`internal/runner/runner.go:114-122`); missing: validation in `LoadDeployConfig` (bad values silently ignored) + PERSIST limits to DB so start/restart/auto-start keep them (apps table has no column) | S, 0.5-1d | Highest ROI-per-day. |
+| **Per-app usage + disk** — `deploy usage` is CLI-side docker stats for one app, no disk, no aggregate. Add daemon API endpoint, multi-app aggregate, disk view (`docker system df` + `~/.deploy/images/<app>`) | S-M, 1-2d | |
+| **Uptime monitoring + webhook alerts** — periodic health poller per app (daemon ticker, NOT the job-oriented scheduler), health-status persistence, webhook config in settings table, POST on failure with dedup/cooldown | M, 2-3d | Sell angle: "you get woken, not the client." |
+| **Env groups** — shared env vars across multiple apps of one client (new `env_groups` table + membership + merge-order deploy.yml < group < secrets; touches 4 env-merge sites: `internal/deploy/promote.go:234-246`, `internal/deploy/rollback.go:112-116`, `internal/api/handlers.go:364-371`, `cmd/daemon.go:139-146`) | M, 2-3d | |
+| **Docs honesty sweep** — reword all "zero-downtime" claims to "health-gated deploys with automatic rollback (brief stop-then-start window)"; strike `rollback_strategy` | S, 0.25d | |
 
-**Goal**: 15-100 person organizations with production compliance needs.
+**Moved out of old v0.4**: preview deploys, GitHub Actions, team auth, JSON logging, PostgreSQL → v0.5. Postgres stays optional and only ships if a client demands it.
 
-- [ ] **RBAC**: Owner, admin, developer, viewer roles per team
-- [ ] **Multi-node**: Orchestrate across multiple VPS (single daemon → cluster)
-- [ ] **Prometheus metrics endpoint**: Container CPU, memory, deploy times, error rates
-- [ ] **Web dashboard**: Read-only monitoring dashboard (apps, health, logs, usage)
-- [ ] **Backup scheduler**: Cron-based automated backups to S3-compatible storage
-- [ ] **Audit log improvements**: Searchable, filterable audit with retention policies
-- [ ] **Uptime monitoring**: Basic health check pings + alerting (webhook, email)
+## v0.5.0 — Agency → team bridge
 
-## v0.6.0+
+**Goal**: Agencies hand off read-only client access as a premium tier; startup teams get SSO + CI/CD previews — bought only after trust is proven at v0.4.
 
-- [ ] **MCP server**: Model Context Protocol server for AI-assisted deploy management
-- [ ] **Webhook triggers**: Deploy events (success, failure, rollback) → webhook calls
+- [ ] **Team auth (OIDC/OAuth2) + RBAC** — client handoff: read-only client access as a premium agency tier
+- [ ] **Preview deploys + GitHub Actions integration** — the demo feature (PR → preview URL, from a YAML workflow file, no web UI)
+- [ ] **Audit log search/filter + retention**
+- [ ] **Structured JSON logging**
+- [ ] **Optional PostgreSQL** — only on client demand (same schema, separate driver files)
+- ~~**Multi-node**~~ — **STRUCK / deferred**: agencies run one VPS; revisit on multi-VPS demand
+
+## v0.6.0 — Teams + monetization
+
+**Goal**: Per-project usage/billing so agencies can bill clients, plus the managed-hosting monetization layer.
+
+- [ ] **Per-project usage/billing** — track per-project resource usage; the feature that lets agencies bill clients and enables managed-hosting monetization
+- [ ] **Webhook triggers** — deploy events (success, failure, rollback) → webhooks
+- [ ] **MCP server** — AI distribution channel (NOT a wedge; deliberately late)
+- [ ] **Backup scheduler** — automated backups to S3-compatible storage (pairs with per-app backup/restore from v0.4)
 - [ ] **Route53 DNS support**
-- [ ] **Usage-based billing**: Track per-team resource usage
+- ~~**Web dashboard**~~ — **DEFERRED** to: read-only status page max (CLI stays the product)
 
 ## Design decisions (locked)
 
@@ -192,7 +203,7 @@ These are decisions we've discussed and committed to. Future agents should NOT r
 
 | Decision | Choice | Reasoning |
 |----------|--------|-----------|
-| Target order | Solo dev → startup → SME | Fix core for one person before adding team complexity |
+| Target order | **Dev agency → startup team → SME** | Agencies buy capability (restore/isolation/audit) not stars; teams buy only after trust is proven; solo devs are a free distribution channel, not a buyer |
 | Database | SQLite default, optional PostgreSQL for teams | SQLite is zero-dependency. PostgreSQL only when team features need it |
 | Redis | Not needed for v0.3-v0.4 | Only relevant for multi-node pub/sub (v0.5+) |
 | CLI hierarchy | Flat commands (`deploy up`, `deploy logs`), kill `deploy app` subcommands | Less cognitive load, better for CI/CD scripts |
@@ -203,11 +214,16 @@ These are decisions we've discussed and committed to. Future agents should NOT r
 | DNS providers | ~~Keep all 6, add tests + zone extraction~~ — **REMOVED in `7d4684ec`** | DNS automation is gone. Deterministic Caddyfile; domains via `deploy domain add`, DNS configured manually (Cloudflare/registrar once) |
 | DNS in init | ~~Prompted but skippable~~ — **REMOVED in `7d4684ec`** | No DNS provider prompt — init no longer touches DNS |
 | Install script | Warns if Docker missing, does NOT auto-install | Too many distro-specific edge cases. User installs Docker separately |
-| Promote flow | Build → start new on unused port → health check → update Caddy → stop old | Zero downtime proven pattern. Old container never killed before new one is healthy |
+| Promote flow | Build → stop old container → start new on the same stable port → health check → update Caddy → remove old container | **REVISED** — stop-then-start window; automatic rollback restarts the old container on health-check failure (see v0.3.x audit) |
 | Port allocation | SQLite table pool + Docker real usage check | No more `app.Port + 1` collisions |
-| Rollback strategy | Tarballs default, tag-based optional (`deploy config set rollback_strategy=tag`) | Tarballs survive `docker system prune`. Tags are faster but less durable |
+| Rollback strategy | **REVISED** — tarball default only; tag-based option REMOVED from the roadmap | The tag path is not implemented; docs honesty rule: claims must match code. Tarballs survive `docker system prune` |
 | Main deploy command | `deploy up` (not `deploy promote`) | Shorter, more intuitive. `promote` becomes hidden alias |
 | Scaffold approach | Auto-generate WORKING Dockerfile per stack, not example files | Example files that need editing add no value over writing from scratch |
 | Install Docker | NEVER in deploy's install script | User installs Docker. Deploy warns if missing, prints link to docs. Too many distro edge cases |
 | Caddy integration | Template-based snippets per app, not string replace | String replace is fragile and corrupts config on port overlaps |
-| MCP server | v0.6+ (not core) | Cool feature but irrelevant if core loop is broken |
+| MCP server | v0.6+ (not core) | Distribution channel for AI agents, deliberately NOT a present wedge |
+| Docs honesty | Claims must match code — no roadmap/README feature that doesn't exist | Trust is the only possible wedge at v0.3.x |
+| Zero-downtime wording | "Health-gated deploy with automatic rollback (stop-then-start window)" until true blue/green ships | Honest about the brief stop-then-start window |
+| Web dashboard | No. CLI-first is a feature, not a gap | Read-only status page is the most we'd ever ship |
+| Multi-node | Deferred | Agencies run one VPS; revisit on multi-VPS demand |
+| Postgres | Only on client demand | Same schema, separate driver files; SQLite stays the default |

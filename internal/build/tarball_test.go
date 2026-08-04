@@ -438,3 +438,33 @@ func TestLoadImageError(t *testing.T) {
 		t.Fatal("expected error for missing tarball")
 	}
 }
+
+func TestImageDirSize(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DEPLOY_DATA_DIR", tmp)
+
+	// Missing dir -> 0, nil
+	size, err := ImageDirSize("ghost-app")
+	if err != nil {
+		t.Fatalf("ImageDirSize missing: %v", err)
+	}
+	if size != 0 {
+		t.Errorf("expected 0 for missing dir, got %d", size)
+	}
+
+	// With tarballs -> sum of sizes
+	dir := filepath.Join(tmp, "images", "test-app")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "v1.tar"), make([]byte, 100), 0600)
+	os.WriteFile(filepath.Join(dir, "v2.tar.zst"), make([]byte, 250), 0600)
+
+	size, err = ImageDirSize("test-app")
+	if err != nil {
+		t.Fatalf("ImageDirSize: %v", err)
+	}
+	if size != 350 {
+		t.Errorf("expected 350 bytes, got %d", size)
+	}
+}

@@ -55,6 +55,10 @@ type Interface interface {
 	// stream of the combined stdout+stderr output, or an error if the
 	// container is not running.
 	ExecContainer(ctx context.Context, containerID, user string, cmd []string) (*ExecResult, error)
+
+	// GetUsage returns a snapshot of Docker system disk usage plus live
+	// per-container CPU/memory stats for all deploy-managed containers.
+	GetUsage(ctx context.Context) (types.DockerUsage, error)
 }
 
 // ExecResult carries the streamed output of a container exec plus a Wait

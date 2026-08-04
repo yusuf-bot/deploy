@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"deploy/internal/types"
 
+	"github.com/docker/go-units"
 	"gopkg.in/yaml.v3"
 )
 
@@ -101,6 +103,20 @@ func validateDeployConfig(cfg *types.DeployConfig) error {
 	}
 	if cfg.Health.Retries < 0 {
 		return fmt.Errorf("health.retries: must be non-negative, got %d", cfg.Health.Retries)
+	}
+
+	// Validate resource limits (memory/cpus) so bad values fail fast at
+	// config load instead of being silently ignored at container creation.
+	if cfg.Resources.Memory != "" {
+		if _, err := units.RAMInBytes(cfg.Resources.Memory); err != nil {
+			return fmt.Errorf("resources.memory: invalid value %q (use e.g. 512m, 1g): %w", cfg.Resources.Memory, err)
+		}
+	}
+	if cfg.Resources.CPUs != "" {
+		cpus, err := strconv.ParseFloat(cfg.Resources.CPUs, 64)
+		if err != nil || cpus <= 0 {
+			return fmt.Errorf("resources.cpus: invalid value %q (must be a positive number, e.g. 0.5, 2)", cfg.Resources.CPUs)
+		}
 	}
 
 	return nil

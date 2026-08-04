@@ -413,3 +413,55 @@ type ProgressEvent struct {
 	Message string `json:"message"`
 	Status  string `json:"status"` // "running", "done", "error"
 }
+
+// ContainerUsage is live CPU/memory stats for one deploy-managed container.
+type ContainerUsage struct {
+	AppID     string  `json:"app_id,omitempty"`
+	Container string  `json:"container_id"`
+	Running   bool    `json:"running"`
+	CPUPct    float64 `json:"cpu_pct,omitempty"`
+	MemBytes  uint64  `json:"mem_bytes,omitempty"`
+	MemLimit  uint64  `json:"mem_limit,omitempty"`
+}
+
+// SystemUsage mirrors `docker system df` totals for the whole Docker daemon.
+type SystemUsage struct {
+	ImagesTotalBytes          int64 `json:"images_total_bytes"`
+	ContainersTotalBytes      int64 `json:"containers_total_bytes"`
+	VolumesTotalBytes         int64 `json:"volumes_total_bytes"`
+	BuildCacheTotalBytes      int64 `json:"build_cache_total_bytes"`
+	ImagesReclaimableBytes    int64 `json:"images_reclaimable_bytes"`
+	ContainersReclaimableBytes int64 `json:"containers_reclaimable_bytes"`
+	VolumesReclaimableBytes   int64 `json:"volumes_reclaimable_bytes"`
+	BuildCacheReclaimableBytes int64 `json:"build_cache_reclaimable_bytes"`
+	ImagesTotalCount          int64 `json:"images_total_count"`
+	ContainersTotalCount      int64 `json:"containers_total_count"`
+	VolumesTotalCount         int64 `json:"volumes_total_count"`
+	BuildCacheTotalCount      int64 `json:"build_cache_total_count"`
+}
+
+// DockerUsage is a snapshot of Docker system disk usage plus live per-container
+// stats for all deploy-managed containers.
+type DockerUsage struct {
+	Containers []ContainerUsage `json:"containers"`
+	System     SystemUsage      `json:"system"`
+}
+
+// AppUsage is per-app usage for GET /api/v1/usage: live CPU/mem plus the
+// on-disk size of the app's saved image tarballs.
+type AppUsage struct {
+	App            string  `json:"app"`
+	Status         string  `json:"status"`
+	Running        bool    `json:"running"`
+	ContainerID    string  `json:"container_id,omitempty"`
+	CPUPct         float64 `json:"cpu_pct,omitempty"`
+	MemBytes       uint64  `json:"mem_bytes,omitempty"`
+	MemLimit       uint64  `json:"mem_limit,omitempty"`
+	ImageDiskBytes int64   `json:"image_disk_bytes"`
+}
+
+// UsageResponse is the response for GET /api/v1/usage.
+type UsageResponse struct {
+	Apps   []AppUsage  `json:"apps"`
+	System SystemUsage `json:"system"`
+}

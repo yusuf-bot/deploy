@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -424,4 +425,105 @@ func (d *DockerRunner) execExitCode(ctx context.Context, execID string) (int, er
 			return 0, ctx.Err()
 		}
 	}
+}
+
+// containerCPUStats holds a computed CPU% and memory usage for a container.
+type containerCPUStats struct {
+	cpuPct   float64
+	memUsage uint64
+	memLimit uint64
+}
+
+// containerStatsOnce fetches a single stats sample for a running container and
+// computes a CPU percentage from the previous-sample delta (the daemon takes
+// two samples ~1s apart when IncludePreviousSample is set).
+func (d *DockerRunner) containerStatsOnce(ctx context.Context, containerID string) (*containerCPUStats, error) {
+	resp, err := d.cli.ContainerStats(ctx, containerID, client.ContainerStatsOptions{
+		Stream:               false,
+		IncludePreviousSample: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("container stats: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var s container.StatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return nil, fmt.Errorf("decode container stats: %w", err)
+	}
+
+	cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage - s.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := float64(s.CPUStats.SystemUsage - s.PreCPUStats.SystemUsage)
+	onlineCPUs := s.CPUStats.OnlineCPUs
+	if onlineCPUs == 0 {
+		onlineCPUs = 1
+	}
+	cpuPct := 0.0
+	if systemDelta > 0 && cpuDelta > 0 {
+		cpuPct = (cpuDelta / systemDelta) * float64(onlineCPUs) * 100.0
+	}
+
+	return &containerCPUStats{
+		cpuPct:   cpuPct,
+		memUsage: s.MemoryStats.Usage,
+		memLimit: s.MemoryStats.Limit,
+	}, nil
+}
+
+// GetUsage implements Interface. It returns docker system df totals plus live
+// CPU/memory stats for every deploy-managed container.
+func (d *DockerRunner) GetUsage(ctx context.Context) (types.DockerUsage, error) {
+	usage := types.DockerUsage{}
+
+	du, err := d.cli.DiskUsage(ctx, client.DiskUsageOptions{
+		Containers: true,
+		Images:     true,
+		Volumes:    true,
+		BuildCache: true,
+	})
+	if err != nil {
+		return usage, fmt.Errorf("disk usage: %w", err)
+	}
+	usage.System = types.SystemUsage{
+		ImagesTotalBytes:           du.Images.TotalSize,
+		ContainersTotalBytes:       du.Containers.TotalSize,
+		VolumesTotalBytes:          du.Volumes.TotalSize,
+		BuildCacheTotalBytes:       du.BuildCache.TotalSize,
+		ImagesReclaimableBytes:     du.Images.Reclaimable,
+		ContainersReclaimableBytes: du.Containers.Reclaimable,
+		VolumesReclaimableBytes:    du.Volumes.Reclaimable,
+		BuildCacheReclaimableBytes: du.BuildCache.Reclaimable,
+		ImagesTotalCount:           du.Images.TotalCount,
+		ContainersTotalCount:       du.Containers.TotalCount,
+		VolumesTotalCount:          du.Volumes.TotalCount,
+		BuildCacheTotalCount:       du.BuildCache.TotalCount,
+	}
+
+	f := make(client.Filters)
+	f.Add("label", "deploy.managed=true")
+	containers, err := d.cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: f,
+	})
+	if err != nil {
+		return usage, fmt.Errorf("list containers: %w", err)
+	}
+
+	for _, c := range containers.Items {
+		cu := types.ContainerUsage{
+			AppID:     c.Labels["deploy.app.id"],
+			Container: c.ID,
+			Running:   c.State == "running",
+		}
+		if c.State == "running" {
+			if stats, statsErr := d.containerStatsOnce(ctx, c.ID); statsErr == nil {
+				cu.CPUPct = stats.cpuPct
+				cu.MemBytes = stats.memUsage
+				cu.MemLimit = stats.memLimit
+			}
+		}
+		usage.Containers = append(usage.Containers, cu)
+	}
+
+	return usage, nil
 }
