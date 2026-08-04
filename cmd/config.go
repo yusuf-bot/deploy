@@ -17,9 +17,13 @@ var configCmd = &cobra.Command{
 	Long: `View and set daemon configuration settings (stored in SQLite).
 
 Known settings:
-  backup_schedule    scheduled per-app backups: "daily HH:MM" or
-                     "weekly DOW HH:MM" (DOW = mon..sun); "" disables
-  backup_retention   per-app backup archives kept per app (default 3, min 1)
+  backup_schedule       scheduled per-app backups: "daily HH:MM" or
+                        "weekly DOW HH:MM" (DOW = mon..sun); "" disables
+  backup_retention      per-app backup archives kept per app (default 3, min 1)
+  log_format            daemon log format: json or text (default text; json
+                        emits structured daemon logs to stderr)
+  audit_retention_days  audit log retention in days (default 90, 0 = keep
+                        forever; older entries are pruned automatically)
 `,
 }
 

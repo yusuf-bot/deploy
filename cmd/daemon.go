@@ -18,6 +18,7 @@ import (
 	"deploy/internal/caddyfile"
 	"deploy/internal/config"
 	"deploy/internal/deploy"
+	"deploy/internal/logging"
 	"deploy/internal/types"
 	"deploy/internal/runner"
 	"deploy/internal/scheduler"
@@ -37,6 +38,13 @@ var daemonCmd = &cobra.Command{
 }
 
 func runDaemon() error {
+	// Structured JSON logging can be forced via env; otherwise it falls back
+	// to the log_format setting read after the DB is migrated below.
+	logFormatEnv := os.Getenv("DEPLOY_LOG_FORMAT")
+	if logFormatEnv != "" {
+		logging.Setup(logFormatEnv)
+	}
+
 	// If running as root via sudo, switch to the real user's home
 	if os.Geteuid() == 0 {
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
@@ -70,6 +78,15 @@ func runDaemon() error {
 	// Migrate
 	if err := state.Migrate(db); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// If not forced via env, honor the log_format setting (json|text).
+	if logFormatEnv == "" {
+		if v, err := state.GetSetting(db, "log_format"); err != nil {
+			log.Printf("warning: get log_format setting: %v", err)
+		} else if v != "" {
+			logging.Setup(v)
+		}
 	}
 
 	// Create Docker runner
