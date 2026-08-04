@@ -3,6 +3,18 @@
 # Usage: curl -fsSL https://deploy.openexplorer.xyz/install.sh | sh
 # Or:    sh scripts/install.sh [version]
 # Or:    sh scripts/install.sh --local /path/to/deploy [version]
+#
+# Download order:
+#   1. GitHub release (kept for the future; the repo does not publish releases yet)
+#   2. Self-hosted asset https://deploy.openexplorer.xyz/deploy-linux-amd64.tar.gz
+#      (fallback — only available for linux/amd64)
+#
+# Environment overrides:
+#   INSTALL_DIR       install prefix (default /usr/local/bin)
+#   DEPLOY_DATA_DIR   deploy data dir (default $HOME/.deploy)
+#   PRUNE             set to 0 to skip prune timer setup (default on)
+#   PRUNE_KEEP        image tarballs to keep (default 3)
+#   PRUNE_TIME        systemd OnCalendar spec (default "Mon *-*-* 04:30:00")
 
 set -eu
 
@@ -13,6 +25,12 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${1:-latest}"
 LOCAL_BINARY=""
 DEPLOY_DIR="${DEPLOY_DATA_DIR:-$HOME/.deploy}"
+
+# Self-hosted fallback artifacts (linux/amd64 only, built locally)
+SELF_HOSTED_URLS="
+https://deploy.openexplorer.xyz/deploy-linux-amd64.tar.gz
+https://deploy.openexplorer.xyz/deploy_linux_amd64.tar.gz
+"
 
 # Parse --local flag
 for arg in "$@"; do
@@ -68,6 +86,60 @@ esac
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Try GitHub releases first. The repo does not publish releases today, so this
+# normally fails and the caller falls back to the self-hosted asset.
+download_from_github() {
+    if [ "$VERSION" = "latest" ]; then
+        info "Fetching latest release..."
+        LATEST=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 || true)
+        if [ -n "$LATEST" ]; then
+            VERSION="$LATEST"
+            ok "Latest release: $VERSION"
+        else
+            warn "Could not fetch latest version from GitHub"
+        fi
+    fi
+
+    DOWNLOAD_URL="https://github.com/$OWNER/$REPO/releases/download/${VERSION}/${BINARY}_${VERSION}_${OS}_${ARCH}.tar.gz"
+    info "Downloading $BINARY $VERSION ($OS/$ARCH) from GitHub..."
+    if curl -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/$BINARY.tar.gz" 2>/dev/null \
+        && tar -xzf "$TMPDIR/$BINARY.tar.gz" -C "$TMPDIR" 2>/dev/null \
+        && [ -f "$TMPDIR/$BINARY" ]; then
+        ok "Downloaded $BINARY $VERSION"
+        return 0
+    fi
+    warn "GitHub release download failed: $DOWNLOAD_URL"
+    return 1
+}
+
+# Fall back to the self-hosted asset. Only linux/amd64 has one; every other
+# platform gets a clear "build locally" message instead of a raw curl 404.
+download_from_self_hosted() {
+    if [ "$OS" != "linux" ] || [ "$ARCH" != "amd64" ]; then
+        err "No self-hosted binary available for $OS/$ARCH (only linux/amd64 is published)"
+        printf "\n%s\n" "Build locally instead:"
+        printf "  %s\n" "cd <path-to-deploy-repo>"
+        printf "  %s\n" "go build -o deploy ."
+        printf "  %s\n" "sudo cp deploy /usr/local/bin/deploy"
+        printf "  %s\n" "deploy init"
+        exit 1
+    fi
+
+    for URL in $SELF_HOSTED_URLS; do
+        info "Downloading $BINARY from $URL..."
+        if curl -fsSL "$URL" -o "$TMPDIR/$BINARY.tar.gz" 2>/dev/null \
+            && tar -xzf "$TMPDIR/$BINARY.tar.gz" -C "$TMPDIR" 2>/dev/null \
+            && [ -f "$TMPDIR/$BINARY" ]; then
+            ok "Downloaded $BINARY (self-hosted)"
+            # Fallback artifacts are built locally; report the real binary version
+            VERSION=$("$TMPDIR/$BINARY" version 2>/dev/null || echo "self-hosted")
+            return 0
+        fi
+        warn "Download failed: $URL"
+    done
+    return 1
+}
+
 if [ -n "$LOCAL_BINARY" ]; then
     # Local install — copy the binary directly
     if [ ! -f "$LOCAL_BINARY" ]; then
@@ -82,24 +154,14 @@ if [ -n "$LOCAL_BINARY" ]; then
     fi
     ok "Using $BINARY $VERSION"
 else
-    # Download from GitHub
-    if [ "$VERSION" = "latest" ]; then
-        info "Fetching latest release..."
-        LATEST=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
-        if [ -n "$LATEST" ]; then
-            VERSION="$LATEST"
-            ok "Latest release: $VERSION"
-        else
-            warn "Could not fetch latest version, using 'latest' tag"
-        fi
+    if download_from_github; then
+        :
+    elif download_from_self_hosted; then
+        warn "Used self-hosted fallback binary ($BINARY $VERSION)"
+    else
+        err "Download failed — tried GitHub releases and self-hosted assets"
+        exit 1
     fi
-
-    DOWNLOAD_URL="https://github.com/$OWNER/$REPO/releases/download/${VERSION}/${BINARY}_${VERSION}_${OS}_${ARCH}.tar.gz"
-
-    info "Downloading $BINARY $VERSION ($OS/$ARCH)..."
-    curl -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/$BINARY.tar.gz"
-    tar -xzf "$TMPDIR/$BINARY.tar.gz" -C "$TMPDIR"
-    ok "Downloaded $BINARY $VERSION"
 fi
 
 # Install binary
@@ -145,6 +207,52 @@ SERVICEUNIT
         ok "systemd service created (running as $DAEMON_USER)"
     else
         ok "systemd service already exists"
+    fi
+fi
+
+# Set up prune timer (Linux + systemd only; default ON)
+if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
+    if [ "${PRUNE:-1}" = "0" ]; then
+        warn "Prune timer skipped (PRUNE=0)"
+    else
+        PRUNE_KEEP="${PRUNE_KEEP:-3}"
+        PRUNE_TIME="${PRUNE_TIME:-Mon *-*-* 04:30:00}"
+        PRUNE_SERVICE="/etc/systemd/system/deploy-prune.service"
+        PRUNE_TIMER="/etc/systemd/system/deploy-prune.timer"
+
+        if [ "$PRUNE_TIME" = "Mon *-*-* 04:30:00" ]; then
+            info "Installing prune timer (weekly Mon 04:30, keep=$PRUNE_KEEP)..."
+        else
+            info "Installing prune timer (custom time '$PRUNE_TIME', keep=$PRUNE_KEEP)..."
+        fi
+
+        sudo tee "$PRUNE_SERVICE" >/dev/null << PRUNEUNIT
+[Unit]
+Description=deploy: prune old image tarballs
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=$DAEMON_USER
+ExecStart=/usr/local/bin/deploy prune --keep $PRUNE_KEEP
+PRUNEUNIT
+        sudo tee "$PRUNE_TIMER" >/dev/null << PRUNETIMER
+[Unit]
+Description=deploy: weekly image tarball prune
+
+[Timer]
+OnCalendar=$PRUNE_TIME
+Persistent=true
+Unit=deploy-prune.service
+
+[Install]
+WantedBy=timers.target
+PRUNETIMER
+        sudo systemctl daemon-reload
+        sudo systemctl enable deploy-prune.timer 2>/dev/null || true
+        sudo systemctl start deploy-prune.timer 2>/dev/null || true
+        ok "Prune timer installed (keep=$PRUNE_KEEP, time='$PRUNE_TIME')"
     fi
 fi
 
