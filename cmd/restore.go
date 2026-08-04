@@ -13,21 +13,42 @@ import (
 )
 
 var restoreCmd = &cobra.Command{
-	Use:   "restore <backup-file>",
-	Short: "Restore from a backup (daemon must be stopped)",
+	Use:   "restore <backup-file> [app]",
+	Short: "Restore a full system backup (daemon stopped) or a per-app backup",
 	Long: `Restores the deploy system from a tar.gz backup archive created by
-'deploy backup'. The daemon must be stopped before restoring.`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Check daemon isn't running — socket shouldn't exist.
-		socketPath := config.SocketPath()
-		if _, err := os.Stat(socketPath); err == nil {
-			return fmt.Errorf("daemon is running — stop it before restore")
-		}
+'deploy backup'. The daemon must be stopped before a full-system restore.
 
+With an optional app name, restores a single app from a per-app backup archive
+('deploy backup <app>') while the daemon is running. The app's DB rows are
+re-imported, its saved image is loaded, and a container is created and health
+checked. If the backup's port is taken, a fresh port is allocated.`,
+	Args: cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		backupFile := args[0]
 		if _, err := os.Stat(backupFile); err != nil {
 			return fmt.Errorf("backup file not found: %s", backupFile)
+		}
+
+		socketPath := config.SocketPath()
+
+		// Per-app restore: daemon must be RUNNING.
+		if len(args) == 2 {
+			appName := args[1]
+			if _, err := os.Stat(socketPath); err != nil {
+				return fmt.Errorf("per-app restore requires the daemon to be running (socket %s not found)", socketPath)
+			}
+			c := newClient()
+			resp, err := c.RestoreAppBackup(appName, backupFile)
+			if err != nil {
+				return err
+			}
+			fmt.Println(resp.Message)
+			return nil
+		}
+
+		// Full-system restore: daemon must be STOPPED.
+		if _, err := os.Stat(socketPath); err == nil {
+			return fmt.Errorf("daemon is running — stop it before restore")
 		}
 
 		// Extract to temp dir.

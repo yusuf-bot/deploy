@@ -28,6 +28,7 @@ var rootCmd = &cobra.Command{
 		skipCommands := map[string]bool{
 			"init":       true,
 			"daemon":     true,
+			"restore":    true,
 			"help":       true,
 			"completion": true,
 			"version":    true,

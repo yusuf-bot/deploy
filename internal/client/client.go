@@ -449,6 +449,29 @@ func (c *Client) CreateBackup() (string, error) {
 	return result.Path, nil
 }
 
+// CreateAppBackup creates a per-app backup archive and returns the path to it.
+func (c *Client) CreateAppBackup(name string) (string, error) {
+	var result struct {
+		Path string `json:"path"`
+	}
+	if err := c.doRequest("POST", "/api/v1/backup/"+name, nil, &result); err != nil {
+		return "", err
+	}
+	return result.Path, nil
+}
+
+// RestoreAppBackup restores a single app from a per-app backup archive while
+// the daemon is running. Returns the promote-style response (version, port,
+// container).
+func (c *Client) RestoreAppBackup(name, file string) (*types.PromoteResponse, error) {
+	var result types.PromoteResponse
+	body := map[string]string{"file": file}
+	if err := c.doRequest("POST", "/api/v1/apps/"+name+"/restore", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // DevStart starts a development container for an app.
 func (c *Client) DevStart(name string) (*types.StartStopResponse, error) {
 	var result types.StartStopResponse

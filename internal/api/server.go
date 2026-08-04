@@ -154,6 +154,8 @@ func (s *Server) registerRoutes() {
 
 	// Phase 6: backup
 	mux.HandleFunc("POST /api/v1/backup", s.handleBackup)
+	mux.HandleFunc("POST /api/v1/backup/{name}", s.handleAppBackup)
+	mux.HandleFunc("POST /api/v1/apps/{name}/restore", s.handleAppRestore)
 
 	// Phase 7: dev containers
 	mux.HandleFunc("POST /api/v1/apps/{name}/dev/start", s.handleDevStart)

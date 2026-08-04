@@ -34,7 +34,8 @@ deploy.conf
 
 # Specific tracked binaries
 bin/deploy
-deploy
+# Root-anchored: bare `deploy` would shadow the tracked internal/deploy/ dir
+/deploy
 
 # Backup files
 *.bak
