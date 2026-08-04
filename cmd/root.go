@@ -17,7 +17,7 @@ var (
 	waitFlag  = true // default wait=true; --wait flag is registered on `up` only
 	asyncFlag bool
 )
-var Version = "0.3.0"
+var Version = "0.4.0"
 
 // rootCmd represents the base command.
 var rootCmd = &cobra.Command{

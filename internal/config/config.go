@@ -16,7 +16,7 @@ const (
 	DefaultDBName     = "deploy.db"
 	DefaultConfigName = "deploy.yaml"
 	DeployDir         = ".deploy"
-	Version           = "0.3.0"
+	Version           = "0.4.0"
 )
 
 // Config holds the deploy daemon configuration.

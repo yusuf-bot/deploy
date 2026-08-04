@@ -158,20 +158,18 @@ All five items on the previous "immediate priority" list are resolved — none r
 4. ~~**Integration tests**~~ — **DONE** in `internal/integration/` (Docker-based promote/rollback/prune/dev lifecycle tests, hermetic `DEPLOY_DATA_DIR`).
 5. ~~**`rollback_strategy=tarball|tag`**~~ — **REMOVED**. Decision revised: tarball is the default and only option; the tag path is not implemented. See Design Decisions → Rollback strategy.
 
-## v0.4.0 — Agency ops
+## v0.4.0 — Agency ops (shipped)
 
 **Goal**: A dev agency can onboard a client app and prove recovery in minutes on a single VPS — per-app backup/restore, isolation, and audit, with no per-client infrastructure.
 
-**Effort basis: one dev. Total for this release: ~2-3 weeks.**
-
-| Task | Effort | Notes |
+| Task | Status | Notes |
 |------|--------|-------|
-| **Per-app backup/restore** — `deploy backup <app>` / `deploy restore <app>`; restore one client app on a fresh VPS in minutes | M-L, 3-5d | **THE headline feature / primary agency selling point.** ~60% of the machinery exists: image tarballs per app in `~/.deploy/images/`, and the load-tarball→create→start→healthcheck path in `internal/deploy/rollback.go:69-151`. Missing: app-filtered backup API, per-app SQLite row export/import (apps/deployments/secrets/domains/port_allocations), CLI glue. **Stretch**: scheduled per-app backups (cron + retention). |
-| **Resource limits** — finish what's 90% built: deploy.yml `resources:` already parses and applies to `HostConfig` (`internal/runner/runner.go:114-122`); missing: validation in `LoadDeployConfig` (bad values silently ignored) + PERSIST limits to DB so start/restart/auto-start keep them (apps table has no column) | S, 0.5-1d | Highest ROI-per-day. |
-| **Per-app usage + disk** — `deploy usage` is CLI-side docker stats for one app, no disk, no aggregate. Add daemon API endpoint, multi-app aggregate, disk view (`docker system df` + `~/.deploy/images/<app>`) | S-M, 1-2d | |
-| **Uptime monitoring + webhook alerts** — periodic health poller per app (daemon ticker, NOT the job-oriented scheduler), health-status persistence, webhook config in settings table, POST on failure with dedup/cooldown | M, 2-3d | Sell angle: "you get woken, not the client." |
-| **Env groups** — shared env vars across multiple apps of one client (new `env_groups` table + membership + merge-order deploy.yml < group < secrets; touches 4 env-merge sites: `internal/deploy/promote.go:234-246`, `internal/deploy/rollback.go:112-116`, `internal/api/handlers.go:364-371`, `cmd/daemon.go:139-146`) | M, 2-3d | |
-| **Docs honesty sweep** — reword all "zero-downtime" claims to "health-gated deploys with automatic rollback (brief stop-then-start window)"; strike `rollback_strategy` | S, 0.25d | |
+| **Per-app backup/restore** — `deploy backup [app]` / `deploy restore <file> [app]` | ✅ Done | `internal/deploy/restore.go`, `internal/state/backup.go` (ExportApp/ImportApp), `internal/integration/backup_test.go` |
+| **Resource limits** — deploy.yml `resources:` validation + persistence to DB | ✅ Done | Migration v8 (`apps.memory`/`apps.cpus`), validation in promote.go |
+| **Per-app usage + disk** — `deploy usage` with aggregate + `--json` | ✅ Done | `GET /api/v1/usage`, CLI `deploy usage` |
+| **Uptime monitoring + webhook alerts** — health checker every 30s, webhook POST on ok→failed with 5-min cooldown | ✅ Done | Migration v10 (`apps.health_path`, `app_health`), daemon goroutine, `webhook_url`/`webhook_secret` settings |
+| **Env groups** — shared env vars per app, `deploy envgroup` CLI, merge order: deploy.yml < group < secrets | ✅ Done | Migration v9 (`env_groups`, `env_group_vars`, `apps.group_id`), `cmd/envgroup.go` |
+| **Docs honesty sweep** — reword all "zero-downtime" claims | ✅ Done | All "zero-downtime" → "health-gated deploy with automatic rollback" |
 
 **Moved out of old v0.4**: preview deploys, GitHub Actions, team auth, JSON logging, PostgreSQL → v0.5. Postgres stays optional and only ships if a client demands it.
 
@@ -193,7 +191,7 @@ All five items on the previous "immediate priority" list are resolved — none r
 - [ ] **Per-project usage/billing** — track per-project resource usage; the feature that lets agencies bill clients and enables managed-hosting monetization
 - [ ] **Webhook triggers** — deploy events (success, failure, rollback) → webhooks
 - [ ] **MCP server** — AI distribution channel (NOT a wedge; deliberately late)
-- [ ] **Backup scheduler** — automated backups to S3-compatible storage (pairs with per-app backup/restore from v0.4)
+- ~~[ ] **Backup scheduler**~~ — **SHIPPED in v0.4.0** (scheduled per-app backups with retention, built-in daemon)
 - [ ] **Route53 DNS support**
 - ~~**Web dashboard**~~ — **DEFERRED** to: read-only status page max (CLI stays the product)
 

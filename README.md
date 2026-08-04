@@ -1,6 +1,6 @@
 # deploy — self-hosted platform for solo devs, startups, and SMEs
 
-![Version](https://img.shields.io/badge/version-0.3.0-10b981)
+![Version](https://img.shields.io/badge/version-0.4.0-10b981)
 [![Website](https://img.shields.io/badge/website-deploy.openexplorer.xyz-10b981)](https://deploy.openexplorer.xyz)
 [![Docs](https://img.shields.io/badge/docs-docs.deploy.openexplorer.xyz-059669)](https://docs.deploy.openexplorer.xyz)
 [![GitHub](https://img.shields.io/badge/github-yusuf--bot/deploy-1a1a2e)](https://github.com/yusuf-bot/deploy)
