@@ -6,7 +6,7 @@
 #
 # Download order:
 #   1. GitHub release (kept for the future; the repo does not publish releases yet)
-#   2. Self-hosted asset https://deploy.openexplorer.xyz/deploy-linux-amd64.tar.gz
+#   2. Self-hosted asset https://deploy.openexplorer.xyz/deploy-linux-${ARCH}.tar.gz
 #      (fallback — only available for linux/amd64)
 #
 # Environment overrides:
@@ -28,8 +28,8 @@ DEPLOY_DIR="${DEPLOY_DATA_DIR:-$HOME/.deploy}"
 
 # Self-hosted fallback artifacts (linux/amd64 only, built locally)
 SELF_HOSTED_URLS="
-https://deploy.openexplorer.xyz/deploy-linux-amd64.tar.gz
-https://deploy.openexplorer.xyz/deploy_linux_amd64.tar.gz
+https://deploy.openexplorer.xyz/deploy-linux-${ARCH}.tar.gz
+https://deploy.openexplorer.xyz/deploy_linux_${ARCH}.tar.gz
 "
 
 # Parse --local flag
@@ -116,7 +116,7 @@ download_from_github() {
 # platform gets a clear "build locally" message instead of a raw curl 404.
 download_from_self_hosted() {
     if [ "$OS" != "linux" ] || [ "$ARCH" != "amd64" ]; then
-        err "No self-hosted binary available for $OS/$ARCH (only linux/amd64 is published)"
+        err "No self-hosted binary available for $OS/$ARCH (linux/amd64 and linux/arm64 are published)"
         printf "\n%s\n" "Build locally instead:"
         printf "  %s\n" "cd <path-to-deploy-repo>"
         printf "  %s\n" "go build -o deploy ."
