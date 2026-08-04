@@ -239,6 +239,11 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	if err != nil {
 		secrets = nil
 	}
+	// Get group env if app belongs to a group
+	var groupEnv map[string]string
+	if app.GroupID != nil {
+		groupEnv, _ = state.GetGroupEnv(d.db, *app.GroupID)
+	}
 	// Merge deploy.yml env into app env (deploy.yml overrides DB)
 	mergedAppEnv := make(map[string]string)
 	for k, v := range app.Env {
@@ -247,7 +252,7 @@ func (d *Deployer) Promote(ctx context.Context, req *types.PromoteRequest, appNa
 	for k, v := range cfg.Env {
 		mergedAppEnv[k] = v
 	}
-	mergedEnv := state.MergeEnv(mergedAppEnv, secrets)
+	mergedEnv := state.MergeEnv(mergedAppEnv, groupEnv, secrets)
 
 	// 7. Stop the old container FIRST so its port is freed and the new
 	// container can bind the app's stable port. It is only stopped (not

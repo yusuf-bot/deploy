@@ -142,12 +142,17 @@ func (d *Deployer) RestoreApp(ctx context.Context, backupFile, appName string) (
 		return nil, err
 	}
 
-	// 7. Merge env (deploy.yml env in app row < secrets).
+	// 7. Merge env (deploy.yml env in app row < group env < secrets).
 	secrets, err := state.ListSecretsByApp(d.db, appID, d.masterKey)
 	if err != nil {
 		secrets = nil
 	}
-	mergedEnv := state.MergeEnv(app.Env, secrets)
+	// Get group env if app belongs to a group
+	var groupEnv map[string]string
+	if app.GroupID != nil {
+		groupEnv, _ = state.GetGroupEnv(d.db, *app.GroupID)
+	}
+	mergedEnv := state.MergeEnv(app.Env, groupEnv, secrets)
 
 	// 8. Create deployment record.
 	depID := uuid.New().String()

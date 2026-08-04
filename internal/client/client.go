@@ -617,6 +617,56 @@ func (c *Client) Usage(appName string) (*types.UsageResponse, error) {
 	return &result, nil
 }
 
+// --- Env Group methods ---
+
+// EnvGroupSummary is the API response for an env group with its variable count.
+type EnvGroupSummary struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Client    string `json:"client"`
+	VarCount  int    `json:"var_count"`
+	CreatedAt string `json:"created_at"`
+}
+
+// CreateEnvGroup creates a new environment group and returns it.
+func (c *Client) CreateEnvGroup(name, client string) (*EnvGroupSummary, error) {
+	body := map[string]string{"name": name}
+	if client != "" {
+		body["client"] = client
+	}
+	var result EnvGroupSummary
+	if err := c.doRequest("POST", "/api/v1/env-groups", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// SetEnvGroupVar sets a variable in an environment group.
+func (c *Client) SetEnvGroupVar(groupName, key, value string) error {
+	body := map[string]string{"key": key, "value": value}
+	return c.doRequest("POST", "/api/v1/env-groups/"+groupName+"/vars", body, nil)
+}
+
+// SetAppEnvGroup assigns an app to an environment group.
+func (c *Client) SetAppEnvGroup(appName, groupName string) error {
+	body := map[string]string{"group": groupName}
+	return c.doRequest("POST", "/api/v1/apps/"+appName+"/env-group", body, nil)
+}
+
+// ClearAppEnvGroup removes an app from its environment group.
+func (c *Client) ClearAppEnvGroup(appName string) error {
+	return c.doRequest("DELETE", "/api/v1/apps/"+appName+"/env-group", nil, nil)
+}
+
+// ListEnvGroups returns all environment groups with their variable counts.
+func (c *Client) ListEnvGroups() ([]EnvGroupSummary, error) {
+	var result []EnvGroupSummary
+	if err := c.doRequest("GET", "/api/v1/env-groups", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // Shutdown tells the daemon to shut down gracefully.
 func (c *Client) Shutdown() error {
 	return c.doRequest("POST", "/api/v1/shutdown", nil, nil)

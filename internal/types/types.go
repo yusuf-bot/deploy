@@ -106,13 +106,14 @@ type App struct {
 	Status      string            `json:"status"`
 	Port        int               `json:"port"`
 	ServicePort int               `json:"service_port,omitempty"`
+	GroupID     *int              `json:"group_id,omitempty"`
 	Image       string            `json:"image"`
 	Env         map[string]string `json:"env"`
-	Volumes []VolumeMapping `json:"volumes,omitempty"`
-	Dev     bool            `json:"dev,omitempty"`
-	Network string          `json:"network,omitempty"`
-	Command string          `json:"command,omitempty"`
-	Resources *ResourceConfig `json:"resources,omitempty"`
+	Volumes     []VolumeMapping   `json:"volumes,omitempty"`
+	Dev         bool              `json:"dev,omitempty"`
+	Network     string            `json:"network,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	Resources   *ResourceConfig   `json:"resources,omitempty"`
 	ContainerID string            `json:"container_id,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`

@@ -427,8 +427,13 @@ func (s *Server) startAppContainer(ctx context.Context, app *types.App) (string,
 		log.Printf("warning: list secrets for %s: %v", app.Name, err)
 		secrets = nil
 	}
-	if len(secrets) > 0 {
-		app.Env = state.MergeEnvMap(app.Env, secrets)
+	// Get group env if app belongs to a group
+	var groupEnv map[string]string
+	if app.GroupID != nil {
+		groupEnv, _ = state.GetGroupEnv(s.db, *app.GroupID)
+	}
+	if len(secrets) > 0 || len(groupEnv) > 0 {
+		app.Env = state.MergeEnvMap(app.Env, groupEnv, secrets)
 	}
 
 	ver := fmt.Sprintf("manual-%d", time.Now().Unix())
@@ -648,8 +653,13 @@ func (s *Server) handleDevStart(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warning: list secrets for %s: %v", app.Name, err)
 		secrets = nil
 	}
-	if len(secrets) > 0 {
-		devApp.Env = state.MergeEnvMap(app.Env, secrets)
+	// Get group env if app belongs to a group
+	var groupEnv map[string]string
+	if app.GroupID != nil {
+		groupEnv, _ = state.GetGroupEnv(s.db, *app.GroupID)
+	}
+	if len(secrets) > 0 || len(groupEnv) > 0 {
+		devApp.Env = state.MergeEnvMap(app.Env, groupEnv, secrets)
 	}
 
 	// No registry pull: run the locally-built image for the active deployment.
@@ -1527,6 +1537,181 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "settings updated"})
+}
+
+// --- Env Groups ---
+
+func (s *Server) handleCreateEnvGroup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string `json:"name"`
+		Client string `json:"client"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid request body"))
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	group, err := state.CreateEnvGroup(s.db, req.Name, req.Client)
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, ErrorBody(&types.SystemError{Code: types.ErrConflict, Message: err.Error()}))
+		} else {
+			writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		}
+		return
+	}
+
+	vars, _ := state.GetEnvGroupVars(s.db, group.ID)
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"id":         group.ID,
+		"name":       group.Name,
+		"client":     group.Client,
+		"var_count":  len(vars),
+		"created_at": group.CreatedAt,
+	})
+}
+
+func (s *Server) handleListEnvGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := state.ListEnvGroups(s.db)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	type groupResp struct {
+		ID        int    `json:"id"`
+		Name      string `json:"name"`
+		Client    string `json:"client"`
+		VarCount  int    `json:"var_count"`
+		CreatedAt string `json:"created_at"`
+	}
+
+	result := make([]groupResp, 0, len(groups))
+	for _, g := range groups {
+		vars, _ := state.GetEnvGroupVars(s.db, g.ID)
+		result = append(result, groupResp{
+			ID:        g.ID,
+			Name:      g.Name,
+			Client:    g.Client,
+			VarCount:  len(vars),
+			CreatedAt: g.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleSetEnvGroupVar(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	group, err := state.GetEnvGroupByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+	if group == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("env group"))
+		return
+	}
+
+	var req struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid request body"))
+		return
+	}
+	if req.Key == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("key required"))
+		return
+	}
+
+	if err := state.SetEnvGroupVar(s.db, group.ID, req.Key, req.Value); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("variable %q set in group %q", req.Key, name)})
+}
+
+func (s *Server) handleSetAppEnvGroup(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	app, err := state.GetAppByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	var req struct {
+		Group string `json:"group"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, BadRequestError("invalid request body"))
+		return
+	}
+	if req.Group == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("group required"))
+		return
+	}
+
+	group, err := state.GetEnvGroupByName(s.db, req.Group)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+	if group == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("env group"))
+		return
+	}
+
+	if err := state.SetAppGroup(s.db, name, &group.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("app %q added to group %q", name, req.Group)})
+}
+
+func (s *Server) handleClearAppEnvGroup(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, BadRequestError("name required"))
+		return
+	}
+
+	app, err := state.GetAppByName(s.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+	if app == nil {
+		writeError(w, http.StatusNotFound, NotFoundError("app"))
+		return
+	}
+
+	if err := state.ClearAppGroup(s.db, name); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrorBody(systemError(err)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("app %q removed from its group", name)})
 }
 
 // --- Shutdown ---

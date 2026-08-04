@@ -141,8 +141,13 @@ func runDaemon() error {
 				log.Printf("warning: auto-start %q: list secrets: %v", app.Name, err)
 				secrets = nil
 			}
-			if len(secrets) > 0 {
-				app.Env = state.MergeEnvMap(app.Env, secrets)
+			// Get group env if app belongs to a group
+			var groupEnv map[string]string
+			if app.GroupID != nil {
+				groupEnv, _ = state.GetGroupEnv(db, *app.GroupID)
+			}
+			if len(secrets) > 0 || len(groupEnv) > 0 {
+				app.Env = state.MergeEnvMap(app.Env, groupEnv, secrets)
 			}
 
 			ver := fmt.Sprintf("auto-%d", time.Now().Unix())

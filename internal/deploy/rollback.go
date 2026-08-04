@@ -113,7 +113,12 @@ func (d *Deployer) Rollback(ctx context.Context, appName, targetVersion, dir str
 	if err != nil {
 		secrets = nil
 	}
-	mergedEnv := state.MergeEnv(app.Env, secrets)
+	// Get group env if app belongs to a group
+	var groupEnv map[string]string
+	if app.GroupID != nil {
+		groupEnv, _ = state.GetGroupEnv(d.db, *app.GroupID)
+	}
+	mergedEnv := state.MergeEnv(app.Env, groupEnv, secrets)
 
 	// Stop the old container FIRST so its port is freed and the new container
 	// can bind the app's stable port. It is only stopped (not removed) so a

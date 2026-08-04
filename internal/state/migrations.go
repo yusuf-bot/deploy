@@ -133,6 +133,24 @@ var migrations = []Migration{
 			ALTER TABLE apps ADD COLUMN cpus TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		Version: 9,
+		SQL: `
+			CREATE TABLE IF NOT EXISTS env_groups (
+				id INTEGER PRIMARY KEY,
+				name TEXT UNIQUE NOT NULL,
+				client TEXT NOT NULL DEFAULT '',
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+			CREATE TABLE IF NOT EXISTS env_group_vars (
+				group_id INTEGER NOT NULL REFERENCES env_groups(id) ON DELETE CASCADE,
+				key TEXT NOT NULL,
+				value TEXT NOT NULL,
+				PRIMARY KEY (group_id, key)
+			);
+			ALTER TABLE apps ADD COLUMN group_id INTEGER REFERENCES env_groups(id);
+		`,
+	},
 }
 
 // EnsureSchemaMigrationsTable creates the tracking table if it doesn't exist.

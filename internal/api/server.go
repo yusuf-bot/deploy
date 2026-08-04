@@ -161,6 +161,13 @@ func (s *Server) registerRoutes() {
 	mux.HandleFunc("POST /api/v1/apps/{name}/dev/start", s.handleDevStart)
 	mux.HandleFunc("POST /api/v1/apps/{name}/dev/stop", s.handleDevStop)
 
+	// Env groups
+	mux.HandleFunc("POST /api/v1/env-groups", s.handleCreateEnvGroup)
+	mux.HandleFunc("GET /api/v1/env-groups", s.handleListEnvGroups)
+	mux.HandleFunc("POST /api/v1/env-groups/{name}/vars", s.handleSetEnvGroupVar)
+	mux.HandleFunc("POST /api/v1/apps/{name}/env-group", s.handleSetAppEnvGroup)
+	mux.HandleFunc("DELETE /api/v1/apps/{name}/env-group", s.handleClearAppEnvGroup)
+
 	s.mux = panicRecoveryMiddleware(loggingMiddleware(mux))
 }
 

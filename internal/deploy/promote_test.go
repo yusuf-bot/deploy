@@ -420,12 +420,16 @@ func TestMergeEnv(t *testing.T) {
 		"NODE_ENV": "production",
 		"PORT":     "8080",
 	}
+	groupEnv := map[string]string{
+		"GROUP_VAR": "from-group",
+		"PORT":      "9090", // group overrides app
+	}
 	secrets := map[string]string{
 		"DB_PASSWORD": "secret123",
-		"NODE_ENV":    "should-not-appear", // secrets override app env
+		"NODE_ENV":    "should-not-appear", // secrets override group and app
 	}
 
-	env := state.MergeEnv(appEnv, secrets)
+	env := state.MergeEnv(appEnv, groupEnv, secrets)
 
 	envMap := make(map[string]string)
 	for _, e := range env {
@@ -438,8 +442,8 @@ func TestMergeEnv(t *testing.T) {
 	if envMap["NODE_ENV"] != "should-not-appear" {
 		t.Errorf("expected secrets to override NODE_ENV, got %q", envMap["NODE_ENV"])
 	}
-	if envMap["PORT"] != "8080" {
-		t.Errorf("expected PORT=8080, got %q", envMap["PORT"])
+	if envMap["PORT"] != "9090" {
+		t.Errorf("expected group to override PORT to 9090, got %q", envMap["PORT"])
 	}
 	if envMap["DB_PASSWORD"] != "secret123" {
 		t.Errorf("expected DB_PASSWORD=secret123, got %q", envMap["DB_PASSWORD"])
